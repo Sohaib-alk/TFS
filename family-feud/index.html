@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#060b19" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>تحدي العائلات | Family Feud</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <!-- الهيدر العلوي -->
+    <header class="top-bar">
+      <div class="brand">
+        <div class="brand-logo">؟!</div>
+        <div class="brand-text">
+          <h1>تحدي العائلات</h1>
+          <div class="status-row">
+            <span id="saveStatus" class="save-badge">● محفوظ محلياً ✓</span>
+            <span id="connStatus" class="conn-badge">بدون إنترنت</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="mode-tabs" role="tablist">
+        <button class="tab-btn active" data-mode="host">📺 المضيف</button>
+        <button class="tab-btn" data-mode="buzzer">🚨 الجرس</button>
+        <button class="tab-btn" data-mode="single">📱 جهاز واحد</button>
+      </nav>
+
+      <div class="header-actions">
+        <button id="btnConnectModal" class="icon-btn" title="الربط بالبلوتوث أو الشبكة">📡 الربط (<span id="peerCount">0</span>)</button>
+        <button id="btnBankModal" class="icon-btn" title="بنك الأسئلة">📚 البنك (<span id="bankCount">105</span>)</button>
+        <button id="btnSoundToggle" class="icon-btn" title="الصوت">🔊</button>
+      </div>
+    </header>
+
+    <!-- شاشة المضيف واللوحة -->
+    <main id="view-host" class="view active">
+      <!-- لوحة النقاط والأخطاء -->
+      <section class="scoreboard">
+        <div class="team-card team-a">
+          <input id="teamAName" class="team-name-input" value="عائلة الصقور" aria-label="اسم الفريق الأول" />
+          <div id="teamAScore" class="team-score">0</div>
+          <div class="team-controls">
+            <button class="btn-award" data-award="A">+ منح النقاط</button>
+            <button class="btn-minus" data-minus="A">-10</button>
+          </div>
+        </div>
+
+        <div class="round-card">
+          <div class="round-top">
+            <button id="btnMultiplier" class="mult-badge" title="اضغط لتغيير المضاعف">x1</button>
+            <span class="round-label">نقاط الجولة</span>
+          </div>
+          <div id="roundPoints" class="round-points">0</div>
+          <div class="strikes-row" id="strikesDisplay">
+            <span class="strike-box">X</span>
+            <span class="strike-box">X</span>
+            <span class="strike-box">X</span>
+          </div>
+          <div class="strike-actions">
+            <button id="btnAddStrike" class="btn-strike">خطأ X</button>
+            <button id="btnClearStrikes" class="btn-small">مسح X</button>
+          </div>
+        </div>
+
+        <div class="team-card team-b">
+          <input id="teamBName" class="team-name-input" value="عائلة النجوم" aria-label="اسم الفريق الثاني" />
+          <div id="teamBScore" class="team-score">0</div>
+          <div class="team-controls">
+            <button class="btn-award" data-award="B">+ منح النقاط</button>
+            <button class="btn-minus" data-minus="B">-10</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- شريط السؤال -->
+      <section class="question-box">
+        <div class="question-meta">
+          <span id="questionCounter">سؤال 1 من 105</span>
+          <span id="questionCategory" class="cat-pill">حياة يومية</span>
+          <div class="q-tools">
+            <button id="btnPeekToggle" class="btn-small">👁️ تلميح المضيف</button>
+            <button id="btnRevealAll" class="btn-small">كشف الكل</button>
+          </div>
+        </div>
+        <h2 id="questionText" class="question-text">جاري تحميل السؤال...</h2>
+      </section>
+
+      <!-- إشعار من ضغط الجرس أولاً -->
+      <div id="buzzBanner" class="buzz-banner hidden">
+        <span id="buzzWinnerText">🚨 ضغط الجرس أولاً!</span>
+        <button id="btnResetBuzz" class="btn-small">تصفير الجرس</button>
+      </div>
+
+      <!-- لوحة الإجابات -->
+      <section id="answersGrid" class="answers-grid"></section>
+
+      <!-- شريط التنقل السفلي -->
+      <footer class="bottom-controls">
+        <button id="btnPrevQ" class="nav-btn">➡️ السابق</button>
+        <button id="btnRandomQ" class="nav-btn primary">🎲 سؤال عشوائي</button>
+        <button id="btnNextQ" class="nav-btn">التالي ⬅️</button>
+        <button id="btnResetGame" class="nav-btn danger">🔄 تصفير اللعبة</button>
+      </footer>
+    </main>
+
+    <!-- شاشة جرس المتسابق -->
+    <main id="view-buzzer" class="view">
+      <div class="buzzer-container">
+        <div class="player-setup">
+          <label>اسمك أو فريقك:</label>
+          <input id="playerNameInput" type="text" placeholder="مثال: أحمد - عائلة الصقور" />
+          <div class="team-select">
+            <button class="pick-team active" data-team="A">الفريق الأول</button>
+            <button class="pick-team" data-team="B">الفريق الثاني</button>
+          </div>
+        </div>
+
+        <button id="bigBuzzerBtn" class="big-buzzer ready">
+          <span class="buzzer-icon">🚨</span>
+          <span id="buzzerMainLabel" class="buzzer-label">اضغط للإجابة!</span>
+          <span id="buzzerSubLabel" class="buzzer-sub">جاهز وسريع الاستجابة</span>
+        </button>
+
+        <div class="buzzer-footer">
+          <p id="buzzerConnHint">متصل محلياً — اضغط فور سماع السؤال</p>
+        </div>
+      </div>
+    </main>
+
+    <!-- شاشة جهاز واحد -->
+    <main id="view-single" class="view">
+      <div class="single-header">
+        <span id="singleQCat" class="cat-pill">عام</span>
+        <button id="btnSingleRandom" class="nav-btn primary">🎲 سؤال جديد</button>
+      </div>
+      <div class="question-box">
+        <h2 id="singleQText" class="question-text"></h2>
+      </div>
+      <div id="singleAnswersGrid" class="answers-grid compact"></div>
+      <div class="dual-buzzers">
+        <button id="singleBuzzA" class="dual-btn team-a-bg">🚨 جرس الفريق الأول</button>
+        <button id="singleBuzzB" class="dual-btn team-b-bg">🚨 جرس الفريق الثاني</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- نافذة الربط والأجهزة -->
+  <div id="connectModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>📡 ربط الأجهزة بدون إنترنت</h3>
+        <button class="close-modal" data-close="connectModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint-text">اربط أجهزة المتسابقين بشاشة المضيف بدون إنترنت عبر البلوتوث المباشر أو نقطة الاتصال المحلية (Hotspot):</p>
+        <div class="connect-grid">
+          <div class="connect-box">
+            <h4>1️⃣ البلوتوث المباشر (Web Bluetooth)</h4>
+            <p>اقترن بجهاز قريب يدعم البلوتوث منخفض الطاقة (BLE).</p>
+            <button id="btnBleScan" class="nav-btn primary">🔵 بحث واقتران بالبلوتوث</button>
+            <div id="bleLog" class="log-box">الحالة: جاهز للبحث</div>
+          </div>
+          <div class="connect-box">
+            <h4>2️⃣ الربط المحلي الفوري (نفس الشبكة / Hotspot)</h4>
+            <p>افتح الصفحة في تبويب أو جهاز متصل بنفس نقطة الاتصال وسيتم التزامن فوراً.</p>
+            <button id="btnPingPeers" class="nav-btn">⚡ اختبار سرعة الاستجابة (Ping)</button>
+            <div id="peerLog" class="log-box">الأجهزة المتصلة حالياً: 0</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- نافذة بنك الأسئلة -->
+  <div id="bankModal" class="modal hidden">
+    <div class="modal-card large">
+      <div class="modal-head">
+        <h3>📚 بنك الأسئلة وإدارتها</h3>
+        <button class="close-modal" data-close="bankModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="add-q-form">
+          <h4>➕ إضافة سؤال جديد</h4>
+          <input id="newQText" type="text" placeholder="اكتب السؤال هنا..." />
+          <div class="new-answers-inputs">
+            <input class="ans-in" placeholder="إجابة 1 (الأعلى)" />
+            <input class="pts-in" type="number" value="40" />
+            <input class="ans-in" placeholder="إجابة 2" />
+            <input class="pts-in" type="number" value="25" />
+            <input class="ans-in" placeholder="إجابة 3" />
+            <input class="pts-in" type="number" value="15" />
+            <input class="ans-in" placeholder="إجابة 4" />
+            <input class="pts-in" type="number" value="10" />
+            <input class="ans-in" placeholder="إجابة 5" />
+            <input class="pts-in" type="number" value="10" />
+          </div>
+          <button id="btnSaveNewQ" class="nav-btn primary">💾 حفظ السؤال في البنك</button>
+        </div>
+
+        <hr class="divider" />
+        <div class="bank-search-row">
+          <input id="bankSearch" type="text" placeholder="🔍 ابحث في الأسئلة..." />
+          <button id="btnExportJs" class="nav-btn">📋 نسخ ملف questions.js</button>
+        </div>
+        <div id="bankList" class="bank-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ربط ملفات الجافاسكربت بالترتيب -->
+  <script src="questions.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

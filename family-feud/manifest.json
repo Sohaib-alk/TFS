@@ -1,0 +1,10 @@
+{
+  "name": "تحدي العائلات - Family Feud",
+  "short_name": "تحدي العائلات",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#060b19",
+  "theme_color": "#060b19",
+  "dir": "rtl",
+  "lang": "ar"
+}
