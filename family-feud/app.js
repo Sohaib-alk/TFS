@@ -1,13 +1,21 @@
 // ============================================================================
-// منطق لعبة تحدي العائلات (Family Feud) - يعمل بدون إنترنت + تعدد الأجهزة
+// تحدي العائلات - فصل الأدوار (المضيف / شاشة العرض العامة / جرس المتسابق)
+// مع ربط فوري بين الأجهزة عبر PeerJS + BroadcastChannel
 // ============================================================================
 
-const STORAGE_KEY = "ff_arabic_state_v2";
-const CHANNEL_NAME = "ff_arabic_live_channel";
+const HOST_PIN = "1234";
+const STORAGE_KEY = "ff_separated_v3";
+const PEER_PREFIX = "ff-saudi-room-";
 
-let questionsBank = [];
+let role = null; // "host" | "board" | "player"
+let roomCode = "";
+let peer = null;
+let hostConn = null; // اتصال اللاعب أو الشاشة بالمضيف
+let clientConns = []; // اتصالات الأجهزة المتصلة بالمضيف
+const localChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("ff_local_sync") : null;
+
 let state = {
-  currentIndex: 0,
+  qIndex: 0,
   teamAName: "عائلة الصقور",
   teamBName: "عائلة النجوم",
   teamAScore: 0,
@@ -16,24 +24,18 @@ let state = {
   multiplier: 1,
   strikes: 0,
   revealed: [],
-  peekMode: false,
-  soundEnabled: true,
-  playedIndices: [],
+  played: [],
   buzzLocked: false,
-  buzzWinner: null,
-  playerTeam: "A"
+  buzzWinner: "",
+  sound: true
 };
 
-// قناة تزامن محلية فورية بين التبويبات/الأجهزة على نفس الشبكة المحلية
-const channel = ("BroadcastChannel" in window) ? new BroadcastChannel(CHANNEL_NAME) : null;
-let bleCharacteristic = null;
-let connectedPeers = 0;
+let playerTeam = "A";
 
-// -------------------- نظام الصوت (Web Audio API بدون ملفات خارجية) --------------------
+// -------------------- المؤثرات الصوتية --------------------
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-function playTone(type) {
-  if (!state.soundEnabled) return;
+function playSfx(type) {
+  if (!state.sound) return;
   if (audioCtx.state === "suspended") audioCtx.resume();
   const osc = audioCtx.createOscillator();
   const gain = audioCtx.createGain();
@@ -42,511 +44,494 @@ function playTone(type) {
   const now = audioCtx.currentTime;
 
   if (type === "ding") {
-    osc.type = "sine";
     osc.frequency.setValueAtTime(880, now);
     osc.frequency.exponentialRampToValueAtTime(1320, now + 0.18);
     gain.gain.setValueAtTime(0.3, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.45);
-    osc.start(now);
-    osc.stop(now + 0.45);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+    osc.start(now); osc.stop(now + 0.4);
   } else if (type === "strike") {
     osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(130, now);
-    osc.frequency.linearRampToValueAtTime(95, now + 0.4);
+    osc.frequency.setValueAtTime(135, now);
+    osc.frequency.linearRampToValueAtTime(90, now + 0.4);
     gain.gain.setValueAtTime(0.35, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.45);
-    osc.start(now);
-    osc.stop(now + 0.45);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.42);
+    osc.start(now); osc.stop(now + 0.42);
   } else if (type === "buzz") {
     osc.type = "square";
-    osc.frequency.setValueAtTime(520, now);
-    osc.frequency.setValueAtTime(780, now + 0.08);
+    osc.frequency.setValueAtTime(540, now);
+    osc.frequency.setValueAtTime(800, now + 0.08);
     gain.gain.setValueAtTime(0.3, now);
     gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
-    osc.start(now);
-    osc.stop(now + 0.35);
-  } else if (type === "win") {
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(523.25, now);
-    osc.frequency.setValueAtTime(659.25, now + 0.12);
-    osc.frequency.setValueAtTime(783.99, now + 0.24);
-    gain.gain.setValueAtTime(0.3, now);
-    gain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
-    osc.start(now);
-    osc.stop(now + 0.6);
+    osc.start(now); osc.stop(now + 0.35);
   }
 }
 
-// -------------------- التخزين المحلي التلقائي --------------------
-function loadData() {
+// -------------------- الحفظ والاسترجاع للمضيف --------------------
+function saveHostState() {
+  if (role !== "host") return;
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed.questionsBank) && parsed.questionsBank.length > 0) {
-        questionsBank = parsed.questionsBank;
-      } else {
-        questionsBank = [...DEFAULT_QUESTIONS_BANK];
-      }
-      if (parsed.state) {
-        state = { ...state, ...parsed.state };
-      }
-    } else {
-      questionsBank = [...DEFAULT_QUESTIONS_BANK];
-    }
-  } catch (e) {
-    questionsBank = [...DEFAULT_QUESTIONS_BANK];
-  }
-  if (state.currentIndex >= questionsBank.length) state.currentIndex = 0;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ roomCode, state }));
+  } catch (e) {}
 }
 
-function saveData() {
+function loadHostState() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ questionsBank, state }));
-    const badge = document.getElementById("saveStatus");
-    if (badge) badge.textContent = "● محفوظ محلياً ✓";
-  } catch (e) {
-    console.warn("تعذر الحفظ المحلي:", e);
-  }
-}
-
-// -------------------- تزامن الأجهزة (BroadcastChannel + Bluetooth) --------------------
-function broadcastMessage(payload) {
-  if (channel) channel.postMessage(payload);
-  if (bleCharacteristic) {
-    try {
-      const encoder = new TextEncoder();
-      bleCharacteristic.writeValue(encoder.encode(JSON.stringify(payload)));
-    } catch (e) {
-      console.warn("BLE write error", e);
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.roomCode) roomCode = parsed.roomCode;
+      if (parsed.state) state = { ...state, ...parsed.state };
     }
+  } catch (e) {}
+  if (!roomCode) {
+    roomCode = String(Math.floor(1000 + Math.random() * 9000));
   }
 }
 
-if (channel) {
-  channel.onmessage = (event) => {
-    const data = event.data;
-    if (!data || !data.type) return;
-
-    if (data.type === "PING") {
-      channel.postMessage({ type: "PONG" });
-    } else if (data.type === "PONG") {
-      connectedPeers++;
-      updatePeerUI();
-    } else if (data.type === "BUZZ") {
-      handleIncomingBuzz(data.player, data.team, data.ts);
-    } else if (data.type === "RESET_BUZZ") {
-      resetBuzzLocal();
-    } else if (data.type === "SYNC_STATE") {
-      state = { ...state, ...data.state };
-      renderAll();
-    }
-  };
+// -------------------- إرسال التحديثات لجميع الأجهزة --------------------
+function broadcastSync() {
+  saveHostState();
+  const payload = { type: "STATE_UPDATE", state };
+  if (localChannel) localChannel.postMessage(payload);
+  clientConns.forEach((c) => {
+    if (c.open) c.send(payload);
+  });
 }
 
-function updatePeerUI() {
-  const peerCountEl = document.getElementById("peerCount");
-  const peerLogEl = document.getElementById("peerLog");
-  const connBadge = document.getElementById("connStatus");
-  if (peerCountEl) peerCountEl.textContent = connectedPeers;
-  if (peerLogEl) peerLogEl.textContent = `الأجهزة المتصلة حالياً: ${connectedPeers}`;
-  if (connBadge) {
-    connBadge.textContent = connectedPeers > 0 ? `متصل (${connectedPeers})` : "جاهز للربط";
+// -------------------- تهيئة الشبكة (PeerJS + BroadcastChannel) --------------------
+function initNetworkAsHost() {
+  loadHostState();
+  document.getElementById("hostRoomBadge").textContent = `رمز الغرفة: ${roomCode}`;
+  document.getElementById("modalRoomCode").textContent = roomCode;
+
+  const baseUrl = window.location.origin + window.location.pathname;
+  document.getElementById("playerShareUrl").value = `${baseUrl}?role=player&room=${roomCode}`;
+  document.getElementById("boardShareUrl").value = `${baseUrl}?role=board&room=${roomCode}`;
+
+  if (localChannel) {
+    localChannel.onmessage = (e) => {
+      if (e.data && e.data.type === "BUZZ") {
+        onHostReceiveBuzz(e.data.name, e.data.team);
+      } else if (e.data && e.data.type === "REQUEST_STATE") {
+        localChannel.postMessage({ type: "STATE_UPDATE", state });
+      }
+    };
+  }
+
+  if (typeof Peer !== "undefined") {
+    peer = new Peer(PEER_PREFIX + roomCode);
+    peer.on("connection", (conn) => {
+      clientConns.push(conn);
+      updateConnectedCount();
+      conn.on("open", () => conn.send({ type: "STATE_UPDATE", state }));
+      conn.on("data", (data) => {
+        if (data && data.type === "BUZZ") {
+          onHostReceiveBuzz(data.name, data.team);
+        }
+      });
+      conn.on("close", () => {
+        clientConns = clientConns.filter((c) => c !== conn);
+        updateConnectedCount();
+      });
+    });
   }
 }
 
-// -------------------- منطق الجرس فائق السرعة --------------------
-function triggerBuzzer(customName = null, customTeam = null) {
-  if (state.buzzLocked) return;
-  const playerInput = document.getElementById("playerNameInput");
-  const player = customName || (playerInput && playerInput.value.trim()) ||
-    (state.playerTeam === "A" ? state.teamAName : state.teamBName);
-  const team = customTeam || state.playerTeam;
-  const ts = performance.now();
-
-  handleIncomingBuzz(player, team, ts);
-  broadcastMessage({ type: "BUZZ", player, team, ts });
+function updateConnectedCount() {
+  const el = document.getElementById("connectedList");
+  if (el) el.textContent = `الأجهزة المتصلة بالغرفة: ${clientConns.length}`;
 }
 
-function handleIncomingBuzz(player, team, ts) {
+function initNetworkAsClient(targetRoom) {
+  const statusEl = document.getElementById("playerConnBadge");
+  if (localChannel) {
+    localChannel.postMessage({ type: "REQUEST_STATE" });
+    localChannel.onmessage = (e) => {
+      if (e.data && e.data.type === "STATE_UPDATE") {
+        state = e.data.state;
+        if (role === "board") renderBoardView();
+        if (role === "player") syncPlayerBuzzerUI();
+      }
+    };
+  }
+
+  if (typeof Peer !== "undefined" && targetRoom) {
+    peer = new Peer();
+    peer.on("open", () => {
+      hostConn = peer.connect(PEER_PREFIX + targetRoom);
+      hostConn.on("open", () => {
+        if (statusEl) statusEl.textContent = `متصل بالغرفة ${targetRoom} ✓`;
+      });
+      hostConn.on("data", (data) => {
+        if (data && data.type === "STATE_UPDATE") {
+          state = data.state;
+          if (role === "board") renderBoardView();
+          if (role === "player") syncPlayerBuzzerUI();
+        }
+      });
+      hostConn.on("close", () => {
+        if (statusEl) statusEl.textContent = "انقطع الاتصال بالمضيف";
+      });
+    });
+  }
+}
+
+// -------------------- منطق الجرس --------------------
+function onHostReceiveBuzz(playerName, team) {
   if (state.buzzLocked) return;
+  const teamLabel = team === "A" ? state.teamAName : state.teamBName;
   state.buzzLocked = true;
-  state.buzzWinner = { player, team, ts };
+  state.buzzWinner = `${playerName} (${teamLabel})`;
+  playSfx("buzz");
+  renderHostView();
+  broadcastSync();
+}
+
+function sendPlayerBuzz() {
+  if (state.buzzLocked) return;
+  const nameInput = document.getElementById("playerName").value.trim();
+  const name = nameInput || (playerTeam === "A" ? "لاعب الفريق الأول" : "لاعب الفريق الثاني");
+  const msg = { type: "BUZZ", name, team: playerTeam };
 
   if (navigator.vibrate) navigator.vibrate([120, 50, 120]);
-  playTone("buzz");
+  if (localChannel) localChannel.postMessage(msg);
+  if (hostConn && hostConn.open) hostConn.send(msg);
 
-  const banner = document.getElementById("buzzBanner");
-  const winnerText = document.getElementById("buzzWinnerText");
-  const teamLabel = team === "A" ? state.teamAName : state.teamBName;
-  if (banner && winnerText) {
-    winnerText.textContent = `🚨 الأسرع: ${player} (${teamLabel})`;
-    banner.classList.remove("hidden");
-  }
-
-  const bigBtn = document.getElementById("bigBuzzerBtn");
-  const mainLbl = document.getElementById("buzzerMainLabel");
-  const subLbl = document.getElementById("buzzerSubLabel");
-  if (bigBtn && mainLbl && subLbl) {
-    bigBtn.classList.remove("ready");
-    bigBtn.classList.add("won");
-    mainLbl.textContent = `ضغط أولاً: ${player}`;
-    subLbl.textContent = "بانتظار المضيف لتصفير الجرس";
-  }
+  // تحديث فوري لشاشة اللاعب
+  const btn = document.getElementById("playerBuzzerBtn");
+  btn.classList.remove("ready");
+  btn.classList.add("won");
+  document.getElementById("buzzerTitle").textContent = "تم إرسال ضغطتك!";
+  document.getElementById("buzzerSub").textContent = "بانتظار رد المضيف...";
 }
 
-function resetBuzzLocal() {
-  state.buzzLocked = false;
-  state.buzzWinner = null;
-  const banner = document.getElementById("buzzBanner");
-  if (banner) banner.classList.add("hidden");
-
-  const bigBtn = document.getElementById("bigBuzzerBtn");
-  const mainLbl = document.getElementById("buzzerMainLabel");
-  const subLbl = document.getElementById("buzzerSubLabel");
-  if (bigBtn && mainLbl && subLbl) {
-    bigBtn.classList.remove("won", "locked");
-    bigBtn.classList.add("ready");
-    mainLbl.textContent = "اضغط للإجابة!";
-    subLbl.textContent = "جاهز وسريع الاستجابة";
-  }
-}
-
-// -------------------- عرض اللوحة وتحديث الواجهة --------------------
-function getCurrentQuestion() {
-  return questionsBank[state.currentIndex] || questionsBank[0];
-}
-
-function renderAll() {
-  const q = getCurrentQuestion();
-  document.getElementById("bankCount").textContent = questionsBank.length;
-  document.getElementById("teamAName").value = state.teamAName;
-  document.getElementById("teamBName").value = state.teamBName;
-  document.getElementById("teamAScore").textContent = state.teamAScore;
-  document.getElementById("teamBScore").textContent = state.teamBScore;
-  document.getElementById("roundPoints").textContent = state.roundPoints;
-  document.getElementById("btnMultiplier").textContent = `x${state.multiplier}`;
-
-  // الأخطاء X
-  const strikeBoxes = document.querySelectorAll("#strikesDisplay .strike-box");
-  strikeBoxes.forEach((box, idx) => {
-    box.classList.toggle("on", idx < state.strikes);
-  });
-
-  // السؤال
-  document.getElementById("questionCounter").textContent = `سؤال ${state.currentIndex + 1} من ${questionsBank.length}`;
-  document.getElementById("questionCategory").textContent = q.cat || "عام";
-  document.getElementById("questionText").textContent = q.q;
-  document.getElementById("singleQCat").textContent = q.cat || "عام";
-  document.getElementById("singleQText").textContent = q.q;
-
-  renderAnswersGrid("answersGrid", q);
-  renderAnswersGrid("singleAnswersGrid", q);
-  saveData();
-}
-
-function renderAnswersGrid(containerId, q) {
-  const grid = document.getElementById(containerId);
-  if (!grid) return;
-  grid.innerHTML = "";
-
-  q.a.forEach((item, idx) => {
-    const [ansText, pts] = item;
-    const isRevealed = state.revealed.includes(idx);
-    const tile = document.createElement("div");
-    tile.className = "answer-tile" + (isRevealed ? " revealed" : "");
-
-    if (isRevealed) {
-      tile.innerHTML = `
-        <span class="ans-label">${idx + 1}. ${ansText}</span>
-        <span class="ans-pts">${pts}</span>
-      `;
-    } else {
-      tile.innerHTML = `<div class="tile-num">${idx + 1}</div>`;
-      if (state.peekMode && containerId === "answersGrid") {
-        tile.innerHTML += `<div class="tile-peek"><span>${ansText}</span><span>(${pts})</span></div>`;
-      }
-    }
-
-    tile.addEventListener("click", () => toggleAnswer(idx, pts));
-    grid.appendChild(tile);
-  });
-}
-
-function toggleAnswer(idx, pts) {
-  const pos = state.revealed.indexOf(idx);
-  if (pos === -1) {
-    state.revealed.push(idx);
-    state.roundPoints += pts * state.multiplier;
-    playTone("ding");
+function syncPlayerBuzzerUI() {
+  const btn = document.getElementById("playerBuzzerBtn");
+  const title = document.getElementById("buzzerTitle");
+  const sub = document.getElementById("buzzerSub");
+  if (!state.buzzLocked) {
+    btn.className = "mega-buzzer ready";
+    title.textContent = "اضغط للإجابة!";
+    sub.textContent = "جاهز وسريع الاستجابة";
   } else {
-    state.revealed.splice(pos, 1);
-    state.roundPoints = Math.max(0, state.roundPoints - pts * state.multiplier);
+    btn.className = "mega-buzzer lost";
+    title.textContent = `الأسرع: ${state.buzzWinner}`;
+    sub.textContent = "تم قفل الجرس لهذه الجولة";
   }
-  renderAll();
-  broadcastMessage({ type: "SYNC_STATE", state });
 }
 
-function loadQuestion(index) {
-  state.currentIndex = (index + questionsBank.length) % questionsBank.length;
+// -------------------- عرض شاشة التلفزيون (بدون أي تحكم) --------------------
+function renderBoardView() {
+  const q = DEFAULT_QUESTIONS_BANK[state.qIndex] || DEFAULT_QUESTIONS_BANK[0];
+  document.getElementById("tvTeamAName").textContent = state.teamAName;
+  document.getElementById("tvTeamBName").textContent = state.teamBName;
+  document.getElementById("tvTeamAScore").textContent = state.teamAScore;
+  document.getElementById("tvTeamBScore").textContent = state.teamBScore;
+  document.getElementById("tvRoundPoints").textContent = state.roundPoints;
+  document.getElementById("tvMultBadge").textContent = `x${state.multiplier}`;
+  document.getElementById("tvCategory").textContent = q.cat;
+  document.getElementById("tvQuestionText").textContent = q.q;
+
+  const strikes = document.querySelectorAll("#tvStrikes span");
+  strikes.forEach((s, i) => s.classList.toggle("on", i < state.strikes));
+
+  const buzzAlert = document.getElementById("tvBuzzAlert");
+  if (state.buzzLocked && state.buzzWinner) {
+    buzzAlert.textContent = `🚨 الأسرع: ${state.buzzWinner}`;
+    buzzAlert.classList.remove("hidden");
+  } else {
+    buzzAlert.classList.add("hidden");
+  }
+
+  const grid = document.getElementById("tvAnswersGrid");
+  grid.innerHTML = "";
+  q.a.forEach((ans, idx) => {
+    const isOpen = state.revealed.includes(idx);
+    const div = document.createElement("div");
+    div.className = "tv-tile" + (isOpen ? " open" : "");
+    div.innerHTML = isOpen
+      ? `<span class="txt">${idx + 1}. ${ans[0]}</span><span class="pts">${ans[1]}</span>`
+      : `<div class="num">${idx + 1}</div>`;
+    grid.appendChild(div);
+  });
+}
+
+// -------------------- عرض لوحة المضيف --------------------
+function renderHostView() {
+  const q = DEFAULT_QUESTIONS_BANK[state.qIndex] || DEFAULT_QUESTIONS_BANK[0];
+  document.getElementById("hostTeamAName").value = state.teamAName;
+  document.getElementById("hostTeamBName").value = state.teamBName;
+  document.getElementById("hostTeamAScore").textContent = state.teamAScore;
+  document.getElementById("hostTeamBScore").textContent = state.teamBScore;
+  document.getElementById("hostRoundPts").textContent = state.roundPoints;
+  document.getElementById("btnMult").textContent = `x${state.multiplier}`;
+  document.getElementById("hostQNum").textContent = `سؤال ${state.qIndex + 1} من ${DEFAULT_QUESTIONS_BANK.length}`;
+  document.getElementById("hostQCat").textContent = q.cat;
+  document.getElementById("hostQText").textContent = q.q;
+
+  const strikes = document.querySelectorAll("#hostStrikes span");
+  strikes.forEach((s, i) => s.classList.toggle("on", i < state.strikes));
+
+  const buzzAlert = document.getElementById("hostBuzzAlert");
+  if (state.buzzLocked && state.buzzWinner) {
+    document.getElementById("hostBuzzText").textContent = `🚨 الأسرع: ${state.buzzWinner}`;
+    buzzAlert.classList.remove("hidden");
+  } else {
+    buzzAlert.classList.add("hidden");
+  }
+
+  const list = document.getElementById("hostAnswersList");
+  list.innerHTML = "";
+  q.a.forEach((ans, idx) => {
+    const isShown = state.revealed.includes(idx);
+    const btn = document.createElement("button");
+    btn.className = "host-ans-btn" + (isShown ? " shown" : "");
+    btn.innerHTML = `
+      <span>${idx + 1}. ${ans[0]} (${ans[1]} نقطة)</span>
+      <span class="badge-state">${isShown ? "ظاهرة على الشاشة ✓" : "مخفية — اضغط للكشف"}</span>
+    `;
+    btn.addEventListener("click", () => {
+      const pos = state.revealed.indexOf(idx);
+      if (pos === -1) {
+        state.revealed.push(idx);
+        state.roundPoints += ans[1] * state.multiplier;
+        playSfx("ding");
+      } else {
+        state.revealed.splice(pos, 1);
+        state.roundPoints = Math.max(0, state.roundPoints - ans[1] * state.multiplier);
+      }
+      renderHostView();
+      broadcastSync();
+    });
+    list.appendChild(btn);
+  });
+}
+
+function setQuestion(index) {
+  state.qIndex = (index + DEFAULT_QUESTIONS_BANK.length) % DEFAULT_QUESTIONS_BANK.length;
   state.revealed = [];
   state.roundPoints = 0;
   state.strikes = 0;
-  if (!state.playedIndices.includes(state.currentIndex)) {
-    state.playedIndices.push(state.currentIndex);
-  }
-  resetBuzzLocal();
-  broadcastMessage({ type: "RESET_BUZZ" });
-  renderAll();
+  state.buzzLocked = false;
+  state.buzzWinner = "";
+  if (!state.played.includes(state.qIndex)) state.played.push(state.qIndex);
+  renderHostView();
+  broadcastSync();
 }
 
-function pickRandomQuestion() {
-  if (state.playedIndices.length >= questionsBank.length) {
-    state.playedIndices = [];
-  }
-  const unplayed = questionsBank
-    .map((_, i) => i)
-    .filter((i) => !state.playedIndices.includes(i));
-  const rand = unplayed[Math.floor(Math.random() * unplayed.length)];
-  loadQuestion(rand);
-}
+// -------------------- تفعيل الدور المطلوب --------------------
+function activateRole(selectedRole, targetRoom = "") {
+  role = selectedRole;
+  document.getElementById("role-gate").classList.add("hidden");
 
-// -------------------- ربط البلوتوث المباشر (Web Bluetooth) --------------------
-async function scanBluetooth() {
-  const bleLog = document.getElementById("bleLog");
-  if (!navigator.bluetooth) {
-    bleLog.textContent = "المتصفح الحالي لا يدعم Web Bluetooth. استخدم كروم على أندرويد/كمبيوتر أو الربط المحلي عبر الشبكة.";
-    return;
-  }
-  try {
-    bleLog.textContent = "جاري البحث عن أجهزة بلوتوث قريبة...";
-    const device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
-      optionalServices: ["battery_service", "generic_access"]
-    });
-    bleLog.textContent = `تم الاقتران بـ: ${device.name || "جهاز غير مسمى"} ✓`;
-    connectedPeers++;
-    updatePeerUI();
-  } catch (err) {
-    bleLog.textContent = `تم إلغاء البحث: ${err.message}`;
+  if (role === "host") {
+    document.getElementById("view-host").classList.remove("hidden");
+    initNetworkAsHost();
+    renderHostView();
+  } else if (role === "board") {
+    document.getElementById("view-board").classList.remove("hidden");
+    initNetworkAsClient(targetRoom);
+    renderBoardView();
+  } else if (role === "player") {
+    document.getElementById("view-player").classList.remove("hidden");
+    initNetworkAsClient(targetRoom);
   }
 }
 
-// -------------------- إدارة بنك الأسئلة --------------------
-function renderBankList(filter = "") {
-  const list = document.getElementById("bankList");
-  if (!list) return;
-  list.innerHTML = "";
-  const query = filter.trim();
-
-  questionsBank.forEach((item, idx) => {
-    if (query && !item.q.includes(query) && !(item.cat && item.cat.includes(query))) return;
-    const row = document.createElement("div");
-    row.className = "bank-item";
-    row.innerHTML = `
-      <span><strong>${idx + 1}.</strong> [${item.cat || "عام"}] ${item.q}</span>
-      <button class="btn-small" data-play-idx="${idx}">عرض</button>
-    `;
-    row.querySelector("button").addEventListener("click", () => {
-      loadQuestion(idx);
-      document.getElementById("bankModal").classList.add("hidden");
-    });
-    list.appendChild(row);
-  });
-}
-
-// -------------------- تهيئة الأحداث عند تحميل الصفحة --------------------
+// -------------------- أحداث الصفحة --------------------
 document.addEventListener("DOMContentLoaded", () => {
-  loadData();
-  renderAll();
-  if (channel) channel.postMessage({ type: "PING" });
+  const params = new URLSearchParams(window.location.search);
+  const urlRole = params.get("role");
+  const urlRoom = params.get("room") || "";
 
-  // التبديل بين الشاشات
-  document.querySelectorAll(".tab-btn").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-      document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-      btn.classList.add("active");
-      document.getElementById(`view-${btn.dataset.mode}`).classList.add("active");
-    });
+  // إذا فُتحت الصفحة برابط مخصص للاعبين أو شاشة العرض، تدخل مباشرة بدون إظهار خيار المضيف
+  if (urlRole === "player" || urlRole === "board") {
+    activateRole(urlRole, urlRoom);
+  }
+
+  // أزرار شاشة الاختيار
+  document.getElementById("chooseHostBtn").addEventListener("click", () => {
+    document.getElementById("pinPromptBox").classList.remove("hidden");
+    document.getElementById("joinRoomBox").classList.add("hidden");
   });
 
-  // أسماء الفرق ومنح النقاط
-  document.getElementById("teamAName").addEventListener("input", (e) => {
+  document.getElementById("confirmHostPinBtn").addEventListener("click", () => {
+    const val = document.getElementById("hostPinInput").value.trim();
+    if (val === HOST_PIN || val === "") {
+      activateRole("host");
+    } else {
+      alert("الرمز غير صحيح!");
+    }
+  });
+
+  let pendingClientRole = "player";
+  document.getElementById("chooseBoardBtn").addEventListener("click", () => {
+    pendingClientRole = "board";
+    document.getElementById("joinRoomBox").classList.remove("hidden");
+    document.getElementById("pinPromptBox").classList.add("hidden");
+  });
+
+  document.getElementById("choosePlayerBtn").addEventListener("click", () => {
+    pendingClientRole = "player";
+    document.getElementById("joinRoomBox").classList.remove("hidden");
+    document.getElementById("pinPromptBox").classList.add("hidden");
+  });
+
+  document.getElementById("confirmJoinRoomBtn").addEventListener("click", () => {
+    const code = document.getElementById("roomCodeInput").value.trim();
+    activateRole(pendingClientRole, code);
+  });
+
+  // أحداث لوحة المضيف
+  document.getElementById("hostTeamAName").addEventListener("input", (e) => {
     state.teamAName = e.target.value;
-    saveData();
+    broadcastSync();
   });
-  document.getElementById("teamBName").addEventListener("input", (e) => {
+  document.getElementById("hostTeamBName").addEventListener("input", (e) => {
     state.teamBName = e.target.value;
-    saveData();
+    broadcastSync();
   });
 
-  document.querySelectorAll(".btn-award").forEach((btn) => {
+  document.querySelectorAll(".win-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (state.roundPoints <= 0) return;
       if (btn.dataset.award === "A") state.teamAScore += state.roundPoints;
       else state.teamBScore += state.roundPoints;
       state.roundPoints = 0;
-      playTone("win");
-      renderAll();
+      playSfx("ding");
+      renderHostView();
+      broadcastSync();
     });
   });
 
-  document.querySelectorAll(".btn-minus").forEach((btn) => {
+  document.querySelectorAll(".sub-btn[data-minus]").forEach((btn) => {
     btn.addEventListener("click", () => {
       if (btn.dataset.minus === "A") state.teamAScore = Math.max(0, state.teamAScore - 10);
       else state.teamBScore = Math.max(0, state.teamBScore - 10);
-      renderAll();
+      renderHostView();
+      broadcastSync();
     });
   });
 
-  // المضاعف والأخطاء
-  document.getElementById("btnMultiplier").addEventListener("click", () => {
+  document.getElementById("btnMult").addEventListener("click", () => {
     state.multiplier = state.multiplier === 1 ? 2 : state.multiplier === 2 ? 3 : 1;
-    renderAll();
+    renderHostView();
+    broadcastSync();
   });
 
-  document.getElementById("btnAddStrike").addEventListener("click", () => {
+  document.getElementById("btnStrike").addEventListener("click", () => {
     state.strikes = Math.min(3, state.strikes + 1);
-    playTone("strike");
-    renderAll();
+    playSfx("strike");
+    renderHostView();
+    broadcastSync();
   });
 
-  document.getElementById("btnClearStrikes").addEventListener("click", () => {
+  document.getElementById("btnClearStrike").addEventListener("click", () => {
     state.strikes = 0;
-    renderAll();
-  });
-
-  // أدوات السؤال والتنقل
-  document.getElementById("btnPeekToggle").addEventListener("click", () => {
-    state.peekMode = !state.peekMode;
-    renderAll();
+    renderHostView();
+    broadcastSync();
   });
 
   document.getElementById("btnRevealAll").addEventListener("click", () => {
-    const q = getCurrentQuestion();
+    const q = DEFAULT_QUESTIONS_BANK[state.qIndex];
     q.a.forEach((_, idx) => {
       if (!state.revealed.includes(idx)) state.revealed.push(idx);
     });
-    renderAll();
+    renderHostView();
+    broadcastSync();
   });
 
-  document.getElementById("btnPrevQ").addEventListener("click", () => loadQuestion(state.currentIndex - 1));
-  document.getElementById("btnNextQ").addEventListener("click", () => loadQuestion(state.currentIndex + 1));
-  document.getElementById("btnRandomQ").addEventListener("click", pickRandomQuestion);
-  document.getElementById("btnSingleRandom").addEventListener("click", pickRandomQuestion);
+  document.getElementById("btnPrev").addEventListener("click", () => setQuestion(state.qIndex - 1));
+  document.getElementById("btnNext").addEventListener("click", () => setQuestion(state.qIndex + 1));
+  document.getElementById("btnRandom").addEventListener("click", () => {
+    if (state.played.length >= DEFAULT_QUESTIONS_BANK.length) state.played = [];
+    const left = DEFAULT_QUESTIONS_BANK.map((_, i) => i).filter((i) => !state.played.includes(i));
+    setQuestion(left[Math.floor(Math.random() * left.length)]);
+  });
 
-  document.getElementById("btnResetGame").addEventListener("click", () => {
+  document.getElementById("btnResetAll").addEventListener("click", () => {
     state.teamAScore = 0;
     state.teamBScore = 0;
     state.roundPoints = 0;
     state.strikes = 0;
-    state.multiplier = 1;
     state.revealed = [];
-    renderAll();
-  });
-
-  // الجرس
-  const bigBuzzer = document.getElementById("bigBuzzerBtn");
-  bigBuzzer.addEventListener("pointerdown", (e) => {
-    e.preventDefault();
-    triggerBuzzer();
+    state.buzzLocked = false;
+    state.buzzWinner = "";
+    renderHostView();
+    broadcastSync();
   });
 
   document.getElementById("btnResetBuzz").addEventListener("click", () => {
-    resetBuzzLocal();
-    broadcastMessage({ type: "RESET_BUZZ" });
+    state.buzzLocked = false;
+    state.buzzWinner = "";
+    renderHostView();
+    broadcastSync();
   });
 
-  document.querySelectorAll(".pick-team").forEach((btn) => {
+  document.getElementById("btnSound").addEventListener("click", (e) => {
+    state.sound = !state.sound;
+    e.target.textContent = state.sound ? "🔊" : "🔇";
+  });
+
+  // نافذة روابط المشاركة
+  document.getElementById("btnShareLinks").addEventListener("click", () => {
+    document.getElementById("shareModal").classList.remove("hidden");
+  });
+
+  document.querySelectorAll("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".pick-team").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      state.playerTeam = btn.dataset.team;
+      const input = document.getElementById(btn.dataset.copy);
+      navigator.clipboard.writeText(input.value).then(() => {
+        btn.textContent = "تم النسخ ✓";
+        setTimeout(() => (btn.textContent = "نسخ"), 1500);
+      });
     });
   });
 
-  document.getElementById("singleBuzzA").addEventListener("pointerdown", () => {
-    triggerBuzzer(state.teamAName, "A");
-    alert(`🚨 ضغط أولاً: ${state.teamAName}`);
-    resetBuzzLocal();
-  });
-
-  document.getElementById("singleBuzzB").addEventListener("pointerdown", () => {
-    triggerBuzzer(state.teamBName, "B");
-    alert(`🚨 ضغط أولاً: ${state.teamBName}`);
-    resetBuzzLocal();
-  });
-
-  // الصوت والنوافذ المنبثقة
-  document.getElementById("btnSoundToggle").addEventListener("click", (e) => {
-    state.soundEnabled = !state.soundEnabled;
-    e.target.textContent = state.soundEnabled ? "🔊" : "🔇";
-    saveData();
-  });
-
-  document.getElementById("btnConnectModal").addEventListener("click", () => {
-    document.getElementById("connectModal").classList.remove("hidden");
-  });
-
-  document.getElementById("btnBankModal").addEventListener("click", () => {
-    renderBankList();
+  // نافذة بنك الأسئلة للمضيف
+  document.getElementById("btnOpenBank").addEventListener("click", () => {
+    renderBankItems("");
     document.getElementById("bankModal").classList.remove("hidden");
   });
 
-  document.querySelectorAll(".close-modal").forEach((btn) => {
+  document.getElementById("bankSearchInput").addEventListener("input", (e) => {
+    renderBankItems(e.target.value);
+  });
+
+  document.querySelectorAll(".close-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.getElementById(btn.dataset.close).classList.add("hidden");
     });
   });
 
-  document.getElementById("btnBleScan").addEventListener("click", scanBluetooth);
-  document.getElementById("btnPingPeers").addEventListener("click", () => {
-    connectedPeers = 0;
-    updatePeerUI();
-    if (channel) channel.postMessage({ type: "PING" });
-  });
-
-  // إضافة سؤال جديد وحفظه
-  document.getElementById("btnSaveNewQ").addEventListener("click", () => {
-    const qText = document.getElementById("newQText").value.trim();
-    const ansInputs = document.querySelectorAll(".ans-in");
-    const ptsInputs = document.querySelectorAll(".pts-in");
-    const answers = [];
-
-    ansInputs.forEach((inp, i) => {
-      const val = inp.value.trim();
-      const pts = parseInt(ptsInputs[i].value, 10) || 10;
-      if (val) answers.push([val, pts]);
-    });
-
-    if (!qText || answers.length < 2) {
-      alert("يرجى كتابة السؤال وإجابتين على الأقل.");
-      return;
-    }
-
-    questionsBank.unshift({ cat: "مخصص", q: qText, a: answers });
-    document.getElementById("newQText").value = "";
-    ansInputs.forEach((inp) => (inp.value = ""));
-    saveData();
-    renderBankList();
-    loadQuestion(0);
-    alert("تم حفظ السؤال بنجاح!");
-  });
-
-  document.getElementById("bankSearch").addEventListener("input", (e) => {
-    renderBankList(e.target.value);
-  });
-
-  document.getElementById("btnExportJs").addEventListener("click", () => {
-    const code = `const DEFAULT_QUESTIONS_BANK = ${JSON.stringify(questionsBank, null, 2)};`;
-    navigator.clipboard.writeText(code).then(() => {
-      alert("تم نسخ كود questions.js إلى الحافظة!");
+  // أحداث شاشة المتسابق
+  document.querySelectorAll(".t-pick").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".t-pick").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      playerTeam = btn.dataset.team;
     });
   });
 
-  // تسجيل Service Worker للعمل بدون إنترنت بعد أول زيارة
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
-  }
+  document.getElementById("playerBuzzerBtn").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    sendPlayerBuzz();
+  });
 });
+
+function renderBankItems(filter) {
+  const box = document.getElementById("bankItemsList");
+  box.innerHTML = "";
+  const qStr = filter.trim();
+  DEFAULT_QUESTIONS_BANK.forEach((item, idx) => {
+    if (qStr && !item.q.includes(qStr)) return;
+    const row = document.createElement("div");
+    row.className = "bank-row";
+    row.innerHTML = `<span><strong>${idx + 1}.</strong> ${item.q}</span><button class="btn small primary">اختيار</button>`;
+    row.querySelector("button").addEventListener("click", () => {
+      setQuestion(idx);
+      document.getElementById("bankModal").classList.add("hidden");
+    });
+    box.appendChild(row);
+  });
+}
