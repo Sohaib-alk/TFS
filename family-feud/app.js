@@ -1,9 +1,9 @@
 // ============================================================================
-// تحدي العائلات - اكتشاف تلقائي + ربط برفع صورة QR أو مسحها بالكاميرا بدون نت
+// تحدي العائلات - إصلاح شامل لقراءة صور QR وضغط بيانات الربط بدون إنترنت
 // ============================================================================
 
 const HOST_PIN = "1234";
-const STORAGE_KEY = "ff_instant_v6";
+const STORAGE_KEY = "ff_instant_v7";
 const FIXED_LOBBY_ID = "ff-saudi-active-lobby-2026";
 
 let role = null; // "host" | "board" | "player"
@@ -33,6 +33,16 @@ let state = {
 };
 
 let playerTeam = "A";
+
+// -------------------- تحميل محرك قراءة الصور jsQR تلقائياً --------------------
+(function loadJsQrFallback() {
+  if (typeof window.jsQR === "undefined") {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+    s.defer = true;
+    document.head.appendChild(s);
+  }
+})();
 
 // -------------------- المؤثرات الصوتية --------------------
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -66,6 +76,41 @@ function playSfx(type) {
     gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
     osc.start(now); osc.stop(now + 0.35);
   }
+}
+
+// -------------------- ضغط بيانات WebRTC SDP لتصغير كثافة الباركود --------------------
+function packSdp(typeChar, sdp) {
+  const lines = sdp.split(/\r?\n/);
+  const ufrag = (lines.find(l => l.startsWith("a=ice-ufrag:")) || "").split(":")[1] || "";
+  const pwd = (lines.find(l => l.startsWith("a=ice-pwd:")) || "").split(":")[1] || "";
+  const fp = (lines.find(l => l.startsWith("a=fingerprint:")) || "").replace("a=fingerprint:", "");
+  const cands = lines
+    .filter(l => l.startsWith("a=candidate:") && l.includes("typ host"))
+    .slice(0, 2)
+    .map(l => l.replace("a=candidate:", ""));
+  return JSON.stringify({ t: typeChar, u: ufrag, p: pwd, f: fp, c: cands });
+}
+
+function unpackSdp(obj) {
+  const sdpLines = [
+    "v=0",
+    "o=- 4611731400430051336 2 IN IP4 127.0.0.1",
+    "s=-",
+    "t=0 0",
+    "a=group:BUNDLE 0",
+    "a=msid-semantic: WMS",
+    "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
+    "c=IN IP4 0.0.0.0",
+    `a=ice-ufrag:${obj.u}`,
+    `a=ice-pwd:${obj.p}`,
+    `a=fingerprint:${obj.f}`,
+    `a=setup:${obj.t === "o" ? "actpass" : "active"}`,
+    "a=mid:0",
+    "a=sctp-port:5000",
+    ...(obj.c || []).map(c => `a=candidate:${c}`),
+    "a=end-of-candidates"
+  ];
+  return sdpLines.join("\r\n") + "\r\n";
 }
 
 // -------------------- التخزين المحلي ومزامنة التبويبات --------------------
@@ -252,7 +297,7 @@ function initNetworkAsClient() {
   }
 }
 
-// -------------------- توليد وحفظ ومشاركة وقراءة صور QR --------------------
+// -------------------- رسم وحفظ ومشاركة وقراءة صور QR عالية الدقة --------------------
 function renderQrCode(containerId, textData) {
   const box = document.getElementById(containerId);
   if (!box) return;
@@ -260,8 +305,10 @@ function renderQrCode(containerId, textData) {
   if (typeof QRCode !== "undefined") {
     new QRCode(box, {
       text: textData,
-      width: 240,
-      height: 240,
+      width: 360,
+      height: 360,
+      colorDark: "#000000",
+      colorLight: "#ffffff",
       correctLevel: QRCode.CorrectLevel.L
     });
   } else {
@@ -269,26 +316,42 @@ function renderQrCode(containerId, textData) {
   }
 }
 
-function getQrCanvasDataUrl(containerId) {
+// إضافة إطار أبيض عريض حول الباركود لضمان نجاح القراءة 100% من الاستوديو
+function getPaddedQrDataUrl(containerId) {
   const container = document.getElementById(containerId);
-  const canvas = container.querySelector("canvas");
-  if (canvas) return canvas.toDataURL("image/png");
-  const img = container.querySelector("img");
-  if (img) return img.src;
-  return null;
+  const srcCanvas = container.querySelector("canvas");
+  const srcImg = container.querySelector("img");
+  const source = srcCanvas || srcImg;
+  if (!source) return null;
+
+  const size = 440;
+  const pad = 40;
+  const outCanvas = document.createElement("canvas");
+  outCanvas.width = size;
+  outCanvas.height = size;
+  const ctx = outCanvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, size, size);
+  ctx.drawImage(source, pad, pad, size - pad * 2, size - pad * 2);
+  return outCanvas.toDataURL("image/png");
 }
 
 function downloadQrImage(containerId, filename) {
-  const dataUrl = getQrCanvasDataUrl(containerId);
-  if (!dataUrl) return;
+  const dataUrl = getPaddedQrDataUrl(containerId);
+  if (!dataUrl) {
+    alert("يرجى إنشاء الباركود أولاً.");
+    return;
+  }
   const a = document.createElement("a");
   a.href = dataUrl;
   a.download = filename;
+  document.body.appendChild(a);
   a.click();
+  a.remove();
 }
 
 async function shareQrImage(containerId, filename) {
-  const dataUrl = getQrCanvasDataUrl(containerId);
+  const dataUrl = getPaddedQrDataUrl(containerId);
   if (!dataUrl) return;
   try {
     const res = await fetch(dataUrl);
@@ -304,22 +367,56 @@ async function shareQrImage(containerId, filename) {
   }
 }
 
+// محرك قراءة متعدد الطبقات للصورة المرفوعة (BarcodeDetector + jsQR + Html5Qrcode)
 async function decodeQrFromImageFile(file) {
   if (!file) return null;
-  if (typeof Html5Qrcode === "undefined") {
-    alert("مكتبة قراءة الباركود غير محملة بعد، يرجى فتح الصفحة مرة واحدة بالإنترنت.");
-    return null;
+
+  const imgBitmap = await createImageBitmap(file);
+
+  // 1. المحاولة الأولى: واجهة المتصفح الأصلية BarcodeDetector (فورية ودقيقة جداً)
+  if ("BarcodeDetector" in window) {
+    try {
+      const detector = new BarcodeDetector({ formats: ["qr_code"] });
+      const codes = await detector.detect(imgBitmap);
+      if (codes && codes.length > 0 && codes[0].rawValue) {
+        return codes[0].rawValue;
+      }
+    } catch (e) {}
   }
-  const reader = new Html5Qrcode("qrFileReaderHidden");
-  try {
-    const decodedText = await reader.scanFile(file, false);
-    reader.clear();
-    return decodedText;
-  } catch (err) {
-    reader.clear();
-    alert("لم يتم التعرف على الباركود في الصورة، تأكد أن الصورة واضحة وكاملة.");
-    return null;
+
+  // 2. المحاولة الثانية: محرك jsQR على عدة مقاسات للصورة
+  if (typeof window.jsQR !== "undefined") {
+    const scales = [1, 0.75, 0.5];
+    for (const sc of scales) {
+      const w = Math.max(200, Math.floor(imgBitmap.width * sc));
+      const h = Math.max(200, Math.floor(imgBitmap.height * sc));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(imgBitmap, 0, 0, w, h);
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const code = window.jsQR(imageData.data, w, h, { inversionAttempts: "attemptBoth" });
+      if (code && code.data) {
+        return code.data;
+      }
+    }
   }
+
+  // 3. المحاولة الثالثة: Html5Qrcode
+  if (typeof Html5Qrcode !== "undefined") {
+    try {
+      const reader = new Html5Qrcode("qrFileReaderHidden");
+      const text = await reader.scanFile(file, false);
+      reader.clear();
+      if (text) return text;
+    } catch (e) {}
+  }
+
+  alert("تعذر قراءة الباركود من هذه الصورة. تأكد من اختيار صورة الباركود المحفوظة مباشرة.");
+  return null;
 }
 
 async function stopActiveScanner() {
@@ -339,7 +436,7 @@ async function generateHostOfflineQr() {
     updateHostPeerCount();
     stopActiveScanner();
     document.getElementById("hostScannerBox").classList.add("hidden");
-    alert("تم ربط اللاعب بنجاح بدون إنترنت ✓");
+    alert("✅ تم ربط اللاعب بنجاح بدون إنترنت!");
   };
   dc.onmessage = (ev) => {
     try {
@@ -357,7 +454,7 @@ async function generateHostOfflineQr() {
   });
 
   currentOfflinePC = pc;
-  const compactOffer = JSON.stringify({ t: "o", s: pc.localDescription.sdp });
+  const compactOffer = packSdp("o", pc.localDescription.sdp);
   document.getElementById("hostQrContainer").classList.remove("hidden");
   renderQrCode("hostQrCanvas", compactOffer);
 }
@@ -368,12 +465,15 @@ async function handleHostAnswerPayload(decodedText) {
     if (parsed.t === "a" && currentOfflinePC) {
       await stopActiveScanner();
       document.getElementById("hostScannerBox").classList.add("hidden");
-      await currentOfflinePC.setRemoteDescription({ type: "answer", sdp: parsed.s });
+      const fullSdp = parsed.s || unpackSdp(parsed);
+      await currentOfflinePC.setRemoteDescription({ type: "answer", sdp: fullSdp });
+      const listEl = document.getElementById("connectedList");
+      if (listEl) listEl.textContent = "⏳ جاري إتمام الاتصال المباشر مع اللاعب...";
     } else {
-      alert("هذه الصورة ليست باركود رد من اللاعب.");
+      alert("هذه الصورة ليست باركود رد من اللاعب (تأكد من رفع صورة الرد).");
     }
   } catch (e) {
-    alert("صيغة الباركود غير صالحة.");
+    alert("حدث خطأ أثناء معالجة باركود الرد: " + e.message);
   }
 }
 
@@ -404,12 +504,14 @@ async function handleClientOfferPayload(decodedText) {
     if (parsed.t === "o") {
       await stopActiveScanner();
       document.getElementById("clientScannerBox").classList.add("hidden");
-      await buildClientAnswerQr(parsed.s);
+      document.getElementById("clientQrStepText").textContent = "⏳ جاري إنشاء باركود الرد...";
+      const fullSdp = parsed.s || unpackSdp(parsed);
+      await buildClientAnswerQr(fullSdp);
     } else {
       alert("هذه الصورة ليست باركود دعوة من المضيف.");
     }
   } catch (e) {
-    alert("صيغة الباركود غير صالحة.");
+    alert("صيغة الباركود غير صالحة: " + e.message);
   }
 }
 
@@ -437,6 +539,7 @@ async function buildClientAnswerQr(offerSdp) {
       const s2 = document.getElementById("boardStatusText");
       if (s1) s1.textContent = "● متصل بالمضيف بدون نت ✓";
       if (s2) s2.textContent = "● متصل بالمضيف بدون نت ✓";
+      alert("✅ تم الاتصال بالمضيف بنجاح!");
     };
     dc.onmessage = (msgEv) => {
       const data = JSON.parse(msgEv.data);
@@ -457,8 +560,8 @@ async function buildClientAnswerQr(offerSdp) {
     setTimeout(r, 1000);
   });
 
-  const compactAnswer = JSON.stringify({ t: "a", s: pc.localDescription.sdp });
-  document.getElementById("clientQrStepText").textContent = "تم قراءة باركود المضيف! احفظ باركود الرد هذا أو شاركه للمضيف:";
+  const compactAnswer = packSdp("a", pc.localDescription.sdp);
+  document.getElementById("clientQrStepText").textContent = "✅ تم قراءة باركود المضيف! احفظ باركود الرد هذا أو شاركه للمضيف:";
   document.getElementById("clientReplyQrContainer").classList.remove("hidden");
   renderQrCode("clientReplyQrCanvas", compactAnswer);
 }
@@ -644,7 +747,6 @@ document.addEventListener("DOMContentLoaded", () => {
     else alert("الرمز غير صحيح!");
   });
 
-  // أحداث لوحة المضيف
   document.getElementById("hostTeamAName").addEventListener("input", (e) => {
     state.teamAName = e.target.value;
     broadcastSync();
