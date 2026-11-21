@@ -1,4 +1,4 @@
-const CACHE_NAME = "family-feud-instant-v5";
+const CACHE_NAME = "family-feud-qr-upload-v6";
 const ASSETS = [
   "./",
   "./index.html",

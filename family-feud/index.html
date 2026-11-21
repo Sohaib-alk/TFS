@@ -48,7 +48,7 @@
             <span class="role-emoji">🚨</span>
             <div class="role-info">
               <strong>دخول كمتسابق (جرس السرعة)</strong>
-              <small>انضم تلقائياً أو امسح باركود المضيف</small>
+              <small>انضم تلقائياً أو ارفع/امسح باركود المضيف</small>
             </div>
           </button>
 
@@ -104,7 +104,7 @@
 
       <div class="client-bar">
         <span id="boardStatusText">● جاري البحث عن المضيف...</span>
-        <button id="btnBoardScanQr" class="btn small primary">📷 مسح QR المضيف (بدون نت)</button>
+        <button id="btnBoardScanQr" class="btn small primary">🖼️ ربط بالباركود (بدون نت)</button>
       </div>
     </section>
 
@@ -117,7 +117,7 @@
           <span id="hostConnBadge" class="conn-dot">متصل: 0</span>
         </div>
         <div class="host-actions">
-          <button id="btnShareLinks" class="btn small primary">📷 باركود / ربط اللاعبين</button>
+          <button id="btnShareLinks" class="btn small primary">🖼️ باركود / ربط اللاعبين</button>
           <button id="btnOpenBank" class="btn small">📚 الأسئلة</button>
           <button id="btnSound" class="btn small">🔊</button>
         </div>
@@ -204,54 +204,80 @@
         </button>
 
         <div class="player-connect-actions">
-          <button id="btnPlayerScanQr" class="btn small primary">📷 مسح باركود المضيف (بدون نت)</button>
+          <button id="btnPlayerScanQr" class="btn small primary">🖼️ ربط بالباركود (رفع صورة أو مسح)</button>
         </div>
       </div>
     </section>
 
   </div>
 
-  <!-- ==================== نافذة المضيف: باركود QR للربط الفوري بدون نت ==================== -->
+  <!-- ==================== نافذة المضيف: باركود QR (حفظ صورة + رفع رد اللاعب) ==================== -->
   <div id="shareModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
-        <h3>📷 ربط اللاعبين والشاشة فوراً</h3>
+        <h3>🖼️ ربط اللاعبين والشاشة بدون إنترنت</h3>
         <button class="close-btn" data-close="shareModal">✕</button>
       </div>
       <div class="modal-body">
         <p class="sec-desc">
-          <strong>1. مع إنترنت:</strong> بمجرد فتح اللاعبين للموقع سيظهر لهم زر الانضمام التلقائي فوراً.<br/>
-          <strong>2. في البر بدون إنترنت (Hotspot):</strong> افتح نقطة اتصال من جوالك، واضغط الزر بالأسفل ليظهر باركود يمسحه اللاعب بكاميرا جواله:
+          <strong>1. مع إنترنت:</strong> بمجرد فتح اللاعبين للموقع يظهر لهم زر الانضمام التلقائي فوراً.<br/>
+          <strong>2. بدون إنترنت (Hotspot):</strong> أنشئ باركود الدعوة واحفظه أو شاركه كصورة، ثم ارفع صورة باركود الرد من اللاعب:
         </p>
 
-        <button id="btnGenHostQr" class="btn primary">📷 إظهار باركود الربط المباشر (بدون نت)</button>
+        <button id="btnGenHostQr" class="btn primary">🖼️ إنشاء باركود الدعوة (بدون نت)</button>
 
         <div id="hostQrContainer" class="qr-box hidden">
           <div id="hostQrCanvas" class="qr-canvas"></div>
-          <small>خلّ اللاعب يمسح هذا الباركود من شاشته، ثم امسح باركود الرد من جواله:</small>
-          <button id="btnHostScanReplyQr" class="btn small">📷 مسح باركود رد اللاعب</button>
+          <div class="qr-actions-row">
+            <button id="btnDownloadHostQr" class="btn small primary">⬇️ حفظ الباركود كصورة</button>
+            <button id="btnShareHostQrImg" class="btn small">📤 مشاركة الصورة</button>
+          </div>
+          <small>بعد أن يرسل لك اللاعب صورة باركود الرد، اخترها من هنا لإتمام الربط:</small>
+          <div class="qr-actions-row">
+            <label class="btn small primary file-btn">
+              🖼️ رفع صورة رد اللاعب
+              <input id="hostReplyFileIn" type="file" accept="image/*" hidden />
+            </label>
+            <button id="btnHostScanReplyQr" class="btn small">📷 أو مسح بالكاميرا</button>
+          </div>
         </div>
 
         <div id="hostScannerBox" class="scanner-box hidden"></div>
+        <!-- عنصر مخفي لقراءة الصور -->
+        <div id="qrFileReaderHidden" class="hidden"></div>
 
         <div id="connectedList" class="connected-status">الأجهزة المتصلة حالياً: 0</div>
       </div>
     </div>
   </div>
 
-  <!-- ==================== نافذة العميل: مسح QR وعرض QR الرد (بدون نت) ==================== -->
+  <!-- ==================== نافذة العميل: رفع صورة QR أو مسح + حفظ صورة الرد ==================== -->
   <div id="clientQrModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
-        <h3>📷 الربط بالباركود (بدون إنترنت)</h3>
+        <h3>🖼️ الربط بالباركود (بدون إنترنت)</h3>
         <button class="close-btn" data-close="clientQrModal">✕</button>
       </div>
       <div class="modal-body">
-        <p id="clientQrStepText" class="sec-desc">وجّه الكاميرا نحو باركود شاشة المضيف:</p>
-        <div id="clientScannerBox" class="scanner-box"></div>
+        <p id="clientQrStepText" class="sec-desc">اختر صورة باركود المضيف من الاستوديو (أو امسحها بالكاميرا):</p>
+
+        <div id="clientInputOptions" class="qr-actions-row">
+          <label class="btn primary file-btn">
+            🖼️ رفع صورة باركود المضيف
+            <input id="clientOfferFileIn" type="file" accept="image/*" hidden />
+          </label>
+          <button id="btnClientOpenCam" class="btn">📷 مسح بالكاميرا</button>
+        </div>
+
+        <div id="clientScannerBox" class="scanner-box hidden"></div>
+
         <div id="clientReplyQrContainer" class="qr-box hidden">
           <div id="clientReplyQrCanvas" class="qr-canvas"></div>
-          <small>الآن وجّه كاميرا المضيف نحو هذا الباركود ليكتمل الربط فوراً ✓</small>
+          <div class="qr-actions-row">
+            <button id="btnDownloadClientQr" class="btn small primary">⬇️ حفظ باركود الرد كصورة</button>
+            <button id="btnShareClientQrImg" class="btn small">📤 مشاركة الصورة</button>
+          </div>
+          <small>أرسل هذه الصورة للمضيف أو دعه يمسحها من شاشتك ليكتمل الربط فوراً ✓</small>
         </div>
       </div>
     </div>
