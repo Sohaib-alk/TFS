@@ -3,7 +3,7 @@
 // مع ربط فوري بين الأجهزة عبر PeerJS + BroadcastChannel
 // ============================================================================
 
-const HOST_PIN = "1234";
+const HOST_PIN = "qwerty";
 const STORAGE_KEY = "ff_separated_v3";
 const PEER_PREFIX = "ff-saudi-room-";
 
