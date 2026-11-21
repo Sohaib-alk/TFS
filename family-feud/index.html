@@ -7,25 +7,48 @@
   <title>تحدي العائلات | Family Feud</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="style.css" />
-  <!-- PeerJS يعمل تلقائياً عند توفر الإنترنت للربط عن بعد -->
+  <!-- مكتبات خفيفة جداً للربط التلقائي وQR (تُحفظ محلياً في الكاش للعمل بدون نت) -->
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" defer></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
 
-    <!-- ==================== 1. شاشة اختيار الدور (البداية) ==================== -->
+    <!-- ==================== 1. شاشة البداية (اكتشاف تلقائي للجلسة) ==================== -->
     <section id="role-gate" class="gate-screen">
       <div class="gate-card">
         <div class="brand-badge">؟!</div>
         <h1>تحدي العائلات</h1>
-        <p class="subtitle">اختر دور هذا الجهاز للبدء</p>
+        <p class="subtitle">تعمل بالإنترنت أو بدونه عبر نقطة الاتصال (Hotspot)</p>
+
+        <!-- بطاقة الاكتشاف التلقائي للجلسة النشطة -->
+        <div id="liveSessionCard" class="live-discovery hidden">
+          <div class="live-pulse">
+            <span class="dot-green"></span>
+            <strong id="liveSessionTitle">🟢 توجد جلسة نشطة الآن!</strong>
+          </div>
+          <p id="liveSessionSub" class="live-sub">جاهزة للانضمام الفوري بضغطة واحدة</p>
+          <div class="live-join-btns">
+            <button id="btnAutoJoinPlayer" class="btn primary">🚨 دخول كمتسابق (جرس)</button>
+            <button id="btnAutoJoinBoard" class="btn">📺 شاشة عرض (TV)</button>
+          </div>
+        </div>
 
         <div class="role-cards">
           <button id="chooseHostBtn" class="role-option">
             <span class="role-emoji">🎛️</span>
             <div class="role-info">
-              <strong>مقدم اللعبة (المضيف)</strong>
-              <small>تحكم كامل بالأسئلة والنقاط (محمي برمز)</small>
+              <strong>إنشاء جلسة جديدة (المضيف)</strong>
+              <small>إدارة الأسئلة، النقاط، وكشف الإجابات (محمي برمز)</small>
+            </div>
+          </button>
+
+          <button id="choosePlayerBtn" class="role-option">
+            <span class="role-emoji">🚨</span>
+            <div class="role-info">
+              <strong>دخول كمتسابق (جرس السرعة)</strong>
+              <small>انضم تلقائياً أو امسح باركود المضيف</small>
             </div>
           </button>
 
@@ -36,29 +59,13 @@
               <small>تعرض اللوحة للجمهور بدون أزرار أو إجابات مخفية</small>
             </div>
           </button>
-
-          <button id="choosePlayerBtn" class="role-option">
-            <span class="role-emoji">🚨</span>
-            <div class="role-info">
-              <strong>متسابق (جرس السرعة)</strong>
-              <small>شاشة الجرس فقط للمتسابقين</small>
-            </div>
-          </button>
         </div>
 
         <div id="pinPromptBox" class="pin-box hidden">
           <label>رمز المضيف (الافتراضي: 1234):</label>
           <div class="pin-row">
             <input id="hostPinInput" type="password" inputmode="numeric" maxlength="6" placeholder="1234" />
-            <button id="confirmHostPinBtn" class="btn primary">دخول</button>
-          </div>
-        </div>
-
-        <div id="joinRoomBox" class="pin-box hidden">
-          <label>أدخل رمز الغرفة (4 أرقام) أو اربط مباشرة بدون إنترنت:</label>
-          <div class="pin-row">
-            <input id="roomCodeInput" type="text" inputmode="numeric" maxlength="4" placeholder="مثال: 2291" />
-            <button id="confirmJoinRoomBtn" class="btn primary">دخول</button>
+            <button id="confirmHostPinBtn" class="btn primary">ابدأ الجلسة</button>
           </div>
         </div>
       </div>
@@ -96,8 +103,8 @@
       <div id="tvAnswersGrid" class="answers-grid"></div>
 
       <div class="client-bar">
-        <span id="boardStatusText">● في انتظار الربط بالمضيف</span>
-        <button id="btnBoardOfflineSync" class="btn small">📡 ربط بدون نت (QR/كود)</button>
+        <span id="boardStatusText">● جاري البحث عن المضيف...</span>
+        <button id="btnBoardScanQr" class="btn small primary">📷 مسح QR المضيف (بدون نت)</button>
       </div>
     </section>
 
@@ -106,17 +113,16 @@
       <header class="host-topbar">
         <div class="host-title-row">
           <strong class="h-title">🎛️ لوحة المضيف</strong>
-          <span id="hostRoomBadge" class="room-pill">غرفة: ----</span>
-          <span id="hostConnBadge" class="conn-dot" title="الأجهزة المتصلة">متصل: 0</span>
+          <span id="hostNetMode" class="room-pill">بث تلقائي نشط</span>
+          <span id="hostConnBadge" class="conn-dot">متصل: 0</span>
         </div>
         <div class="host-actions">
-          <button id="btnShareLinks" class="btn small primary">📡 ربط الأجهزة</button>
+          <button id="btnShareLinks" class="btn small primary">📷 باركود / ربط اللاعبين</button>
           <button id="btnOpenBank" class="btn small">📚 الأسئلة</button>
-          <button id="btnSound" class="btn small" aria-label="الصوت">🔊</button>
+          <button id="btnSound" class="btn small">🔊</button>
         </div>
       </header>
 
-      <!-- بطاقات النقاط مصممة لمنع انكسار النصوص على الجوال -->
       <div class="host-score-grid">
         <div class="h-team team-a">
           <input id="hostTeamAName" class="team-input" value="عائلة الصقور" />
@@ -152,13 +158,11 @@
         </div>
       </div>
 
-      <!-- تنبيه الجرس -->
       <div id="hostBuzzAlert" class="buzz-alert hidden">
         <span id="hostBuzzText">🚨 الأسرع: ---</span>
         <button id="btnResetBuzz" class="btn small">تصفير</button>
       </div>
 
-      <!-- بطاقة السؤال والإجابات -->
       <div class="host-question-card">
         <div class="hq-meta">
           <span id="hostQNum" class="meta-chip">1 / 105</span>
@@ -169,7 +173,6 @@
         <div id="hostAnswersList" class="host-answers-list"></div>
       </div>
 
-      <!-- أزرار التنقل -->
       <footer class="host-footer">
         <button id="btnPrev" class="btn">➡️ السابق</button>
         <button id="btnRandom" class="btn primary">🎲 عشوائي</button>
@@ -183,7 +186,7 @@
       <div class="player-wrapper">
         <div class="player-header">
           <h2>🚨 جرس المتسابق</h2>
-          <span id="playerConnBadge" class="conn-pill">جاهز للربط</span>
+          <span id="playerConnBadge" class="conn-pill">جاري الاتصال...</span>
         </div>
 
         <div class="player-form">
@@ -201,84 +204,55 @@
         </button>
 
         <div class="player-connect-actions">
-          <button id="btnPlayerOfflineLink" class="btn small">📡 ربط مباشر بدون نت (كود/بلوتوث)</button>
+          <button id="btnPlayerScanQr" class="btn small primary">📷 مسح باركود المضيف (بدون نت)</button>
         </div>
       </div>
     </section>
 
   </div>
 
-  <!-- ==================== نافذة ربط الأجهزة (أونلاين + أوفلاين + بلوتوث) ==================== -->
+  <!-- ==================== نافذة المضيف: باركود QR للربط الفوري بدون نت ==================== -->
   <div id="shareModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
-        <h3>📡 ربط الأجهزة (مع نت أو بدون نت)</h3>
+        <h3>📷 ربط اللاعبين والشاشة فوراً</h3>
         <button class="close-btn" data-close="shareModal">✕</button>
       </div>
       <div class="modal-body">
-        <div class="room-code-display">
-          <span>رمز الغرفة</span>
-          <strong id="modalRoomCode">----</strong>
+        <p class="sec-desc">
+          <strong>1. مع إنترنت:</strong> بمجرد فتح اللاعبين للموقع سيظهر لهم زر الانضمام التلقائي فوراً.<br/>
+          <strong>2. في البر بدون إنترنت (Hotspot):</strong> افتح نقطة اتصال من جوالك، واضغط الزر بالأسفل ليظهر باركود يمسحه اللاعب بكاميرا جواله:
+        </p>
+
+        <button id="btnGenHostQr" class="btn primary">📷 إظهار باركود الربط المباشر (بدون نت)</button>
+
+        <div id="hostQrContainer" class="qr-box hidden">
+          <div id="hostQrCanvas" class="qr-canvas"></div>
+          <small>خلّ اللاعب يمسح هذا الباركود من شاشته، ثم امسح باركود الرد من جواله:</small>
+          <button id="btnHostScanReplyQr" class="btn small">📷 مسح باركود رد اللاعب</button>
         </div>
 
-        <!-- 1. الربط عبر الإنترنت / نقطة الاتصال -->
-        <div class="connect-section">
-          <h4>1️⃣ الربط التلقائي (عند توفر الإنترنت)</h4>
-          <p class="sec-desc">انسخ الرابط وأرسله للاعبين أو افتحه على التلفزيون:</p>
-          <div class="copy-row">
-            <input id="playerShareUrl" readonly />
-            <button class="btn small primary" data-copy="playerShareUrl">نسخ للاعب</button>
-          </div>
-          <div class="copy-row">
-            <input id="boardShareUrl" readonly />
-            <button class="btn small" data-copy="boardShareUrl">نسخ للشاشة</button>
-          </div>
-        </div>
-
-        <!-- 2. الربط المباشر بدون إنترنت 100% (Offline WebRTC Handshake) -->
-        <div class="connect-section">
-          <h4>2️⃣ الربط المباشر بدون إنترنت (Hotspot / Wi-Fi محلي)</h4>
-          <p class="sec-desc">إذا لم يتوفر إنترنت، أنشئ كود دعوة أوفلاين والصقه في جهاز المتسابق/الشاشة:</p>
-          <button id="btnCreateOfflineOffer" class="btn small primary">إنشاء كود دعوة بدون نت</button>
-          <textarea id="hostOfflineOfferOut" class="code-area hidden" readonly rows="2" placeholder="كود الدعوة..."></textarea>
-          <div class="copy-row">
-            <input id="hostOfflineAnswerIn" type="text" placeholder="الصق كود الرد القادم من الجهاز الآخر هنا..." />
-            <button id="btnAcceptOfflineAnswer" class="btn small">تأكيد الربط</button>
-          </div>
-        </div>
-
-        <!-- 3. البلوتوث المباشر -->
-        <div class="connect-section">
-          <h4>3️⃣ البلوتوث المباشر (Web Bluetooth)</h4>
-          <button id="btnBleConnect" class="btn small">🔵 بحث واقتران بجهاز بلوتوث</button>
-          <div id="bleStatusLog" class="status-mini">الحالة: جاهز</div>
-        </div>
+        <div id="hostScannerBox" class="scanner-box hidden"></div>
 
         <div id="connectedList" class="connected-status">الأجهزة المتصلة حالياً: 0</div>
       </div>
     </div>
   </div>
 
-  <!-- ==================== نافذة الربط بدون نت للمتسابق والشاشة ==================== -->
-  <div id="clientOfflineModal" class="modal hidden">
+  <!-- ==================== نافذة العميل: مسح QR وعرض QR الرد (بدون نت) ==================== -->
+  <div id="clientQrModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
-        <h3>📡 ربط الجهاز بدون إنترنت</h3>
-        <button class="close-btn" data-close="clientOfflineModal">✕</button>
+        <h3>📷 الربط بالباركود (بدون إنترنت)</h3>
+        <button class="close-btn" data-close="clientQrModal">✕</button>
       </div>
       <div class="modal-body">
-        <p class="sec-desc">1. الصق كود الدعوة المأخوذ من جوال المضيف:</p>
-        <div class="copy-row">
-          <input id="clientOfferIn" type="text" placeholder="الصق كود المضيف هنا..." />
-          <button id="btnClientMakeAnswer" class="btn small primary">توليد رد</button>
+        <p id="clientQrStepText" class="sec-desc">وجّه الكاميرا نحو باركود شاشة المضيف:</p>
+        <div id="clientScannerBox" class="scanner-box"></div>
+        <div id="clientReplyQrContainer" class="qr-box hidden">
+          <div id="clientReplyQrCanvas" class="qr-canvas"></div>
+          <small>الآن وجّه كاميرا المضيف نحو هذا الباركود ليكتمل الربط فوراً ✓</small>
         </div>
-        <p class="sec-desc">2. انسخ كود الرد التالي وأعطه للمضيف ليتم الربط فوراً:</p>
-        <div class="copy-row">
-          <input id="clientAnswerOut" readonly placeholder="سيظهر كود الرد هنا..." />
-          <button class="btn small" data-copy="clientAnswerOut">نسخ</button>
-        </div>
-        <hr class="sep" />
-        <button id="btnClientBle" class="btn small">🔵 أو الاقتران عبر البلوتوث</button>
       </div>
     </div>
   </div>

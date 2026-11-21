@@ -1,22 +1,21 @@
 // ============================================================================
-// تحدي العائلات - محرك اتصال هجين (نفس الجهاز + شبكة محلية أوفلاين + إنترنت + بلوتوث)
+// تحدي العائلات - اكتشاف تلقائي للجلسة النشطة + ربط بالكاميرا QR بدون نت
 // ============================================================================
 
 const HOST_PIN = "1234";
-const STORAGE_KEY = "ff_hybrid_v4";
-const PEER_PREFIX = "ff-saudi-room-";
+const STORAGE_KEY = "ff_instant_v5";
+const FIXED_LOBBY_ID = "ff-saudi-active-lobby-2026";
 
 let role = null; // "host" | "board" | "player"
-let roomCode = "";
 let peer = null;
 let hostConn = null;
 let clientConns = [];
 let offlineDataChannels = [];
 let currentOfflinePC = null;
-let bleCharacteristic = null;
+let activeScanner = null;
 
 // قناة تزامن فورية بين التبويبات/المتصفحات على نفس الجهاز
-const localChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("ff_local_bus") : null;
+const localChannel = ("BroadcastChannel" in window) ? new BroadcastChannel("ff_instant_bus") : null;
 
 let state = {
   qIndex: 0,
@@ -70,11 +69,11 @@ function playSfx(type) {
   }
 }
 
-// -------------------- التخزين المحلي ومزامنة localStorage بين التبويبات --------------------
+// -------------------- التخزين المحلي ومزامنة التبويبات --------------------
 function saveHostState() {
   if (role !== "host") return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ roomCode, state, ts: Date.now() }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ active: true, state, ts: Date.now() }));
   } catch (e) {}
 }
 
@@ -83,18 +82,13 @@ function loadHostState() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.roomCode) roomCode = parsed.roomCode;
       if (parsed.state) state = { ...state, ...parsed.state };
     }
   } catch (e) {}
-  if (!roomCode) {
-    roomCode = String(Math.floor(1000 + Math.random() * 9000));
-  }
 }
 
-// استماع لتغيرات localStorage كطبقة احتياطية للتزامن على نفس الجهاز
 window.addEventListener("storage", (e) => {
-  if (e.key === STORAGE_KEY && e.newValue && role !== "host") {
+  if (e.key === STORAGE_KEY && e.newValue && role && role !== "host") {
     try {
       const parsed = JSON.parse(e.newValue);
       if (parsed.state) {
@@ -106,25 +100,75 @@ window.addEventListener("storage", (e) => {
   }
 });
 
-// -------------------- بث الحالة عبر جميع القنوات المتاحة --------------------
+// -------------------- اكتشاف الجلسة النشطة تلقائياً عند فتح الصفحة --------------------
+function startAutoDiscovery() {
+  const showBanner = (teamA, teamB) => {
+    const card = document.getElementById("liveSessionCard");
+    const sub = document.getElementById("liveSessionSub");
+    if (card && sub) {
+      sub.textContent = `جلسة (${teamA} ضد ${teamB}) نشطة الآن — انضم بنقرة واحدة`;
+      card.classList.remove("hidden");
+    }
+  };
+
+  // 1. فحص الجلسة المحلية على نفس الجهاز
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.state && (Date.now() - (parsed.ts || 0) < 3600000)) {
+        state = parsed.state;
+        showBanner(state.teamAName, state.teamBName);
+      }
+    }
+  } catch (e) {}
+
+  if (localChannel) {
+    localChannel.postMessage({ type: "DISCOVER" });
+    localChannel.onmessage = (e) => {
+      if (e.data && e.data.type === "STATE_UPDATE") {
+        state = e.data.state;
+        showBanner(state.teamAName, state.teamBName);
+      }
+    };
+  }
+
+  // 2. فحص الجلسة النشطة عبر الشبكة تلقائياً بدون أي كود
+  if (typeof Peer !== "undefined" && navigator.onLine) {
+    try {
+      const probePeer = new Peer();
+      probePeer.on("open", () => {
+        const conn = probePeer.connect(FIXED_LOBBY_ID);
+        conn.on("open", () => {
+          hostConn = conn;
+          peer = probePeer;
+          conn.on("data", (data) => {
+            if (data && data.type === "STATE_UPDATE") {
+              state = data.state;
+              showBanner(state.teamAName, state.teamBName);
+              if (role === "board") renderBoardView();
+              if (role === "player") syncPlayerBuzzerUI();
+            }
+          });
+        });
+      });
+    } catch (e) {}
+  }
+}
+
+// -------------------- بث الحالة لجميع المتصلين --------------------
 function broadcastSync() {
   saveHostState();
   const payload = { type: "STATE_UPDATE", state };
   if (localChannel) localChannel.postMessage(payload);
   clientConns.forEach((c) => { if (c.open) c.send(payload); });
   offlineDataChannels.forEach((dc) => { if (dc.readyState === "open") dc.send(JSON.stringify(payload)); });
-  if (bleCharacteristic) {
-    try {
-      bleCharacteristic.writeValue(new TextEncoder().encode(JSON.stringify(payload)));
-    } catch (e) {}
-  }
   updateHostPeerCount();
 }
 
 function updateHostPeerCount() {
   const total = clientConns.filter((c) => c.open).length +
-    offlineDataChannels.filter((dc) => dc.readyState === "open").length +
-    (bleCharacteristic ? 1 : 0);
+    offlineDataChannels.filter((dc) => dc.readyState === "open").length;
   const badge = document.getElementById("hostConnBadge");
   const listEl = document.getElementById("connectedList");
   if (badge) badge.textContent = `متصل: ${total}`;
@@ -134,25 +178,24 @@ function updateHostPeerCount() {
 // -------------------- تهيئة الشبكة للمضيف --------------------
 function initNetworkAsHost() {
   loadHostState();
-  document.getElementById("hostRoomBadge").textContent = `غرفة: ${roomCode}`;
-  document.getElementById("modalRoomCode").textContent = roomCode;
-
-  const baseUrl = window.location.origin + window.location.pathname;
-  document.getElementById("playerShareUrl").value = `${baseUrl}?role=player&room=${roomCode}`;
-  document.getElementById("boardShareUrl").value = `${baseUrl}?role=board&room=${roomCode}`;
+  const modePill = document.getElementById("hostNetMode");
+  if (modePill) {
+    modePill.textContent = navigator.onLine ? "🟢 بث تلقائي (أونلاين)" : "🟠 وضع البر (بدون نت)";
+  }
 
   if (localChannel) {
     localChannel.onmessage = (e) => {
       if (!e.data) return;
       if (e.data.type === "BUZZ") onHostReceiveBuzz(e.data.name, e.data.team);
-      if (e.data.type === "REQUEST_STATE") localChannel.postMessage({ type: "STATE_UPDATE", state });
+      if (e.data.type === "DISCOVER" || e.data.type === "REQUEST_STATE") {
+        localChannel.postMessage({ type: "STATE_UPDATE", state });
+      }
     };
   }
 
-  // الاتصال السحابي عبر PeerJS (يعمل عند توفر الإنترنت)
   if (typeof Peer !== "undefined" && navigator.onLine) {
     try {
-      peer = new Peer(PEER_PREFIX + roomCode);
+      peer = new Peer(FIXED_LOBBY_ID);
       peer.on("connection", (conn) => {
         clientConns.push(conn);
         conn.on("open", () => {
@@ -171,48 +214,35 @@ function initNetworkAsHost() {
   }
 }
 
-// -------------------- تهيئة الشبكة للعميل (شاشة العرض / المتسابق) --------------------
-function initNetworkAsClient(targetRoom) {
+// -------------------- تهيئة العميل (شاشة العرض / المتسابق) --------------------
+function initNetworkAsClient() {
   const statusEl = document.getElementById("playerConnBadge");
   const boardStatusEl = document.getElementById("boardStatusText");
-
-  const setConnectedLabel = (msg) => {
-    if (statusEl) statusEl.textContent = msg;
-    if (boardStatusEl) boardStatusEl.textContent = msg;
+  const setStatus = (txt) => {
+    if (statusEl) statusEl.textContent = txt;
+    if (boardStatusEl) boardStatusEl.textContent = txt;
   };
 
-  // 1. محاولة القراءة الفورية من localStorage إذا كان على نفس الجهاز
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed.state) {
-        state = parsed.state;
-        setConnectedLabel("● متصل محلياً على نفس الجهاز ✓");
-      }
-    }
-  } catch (e) {}
-
-  // 2. قناة BroadcastChannel للتبويبات المفتوحة
-  if (localChannel) {
+  if (hostConn && hostConn.open) {
+    setStatus("● متصل بالجلسة تلقائياً ✓");
+  } else if (localChannel) {
     localChannel.postMessage({ type: "REQUEST_STATE" });
     localChannel.onmessage = (e) => {
       if (e.data && e.data.type === "STATE_UPDATE") {
         state = e.data.state;
-        setConnectedLabel("● متصل محلياً ✓");
+        setStatus("● متصل بالجلسة محلياً ✓");
         if (role === "board") renderBoardView();
         if (role === "player") syncPlayerBuzzerUI();
       }
     };
   }
 
-  // 3. PeerJS عبر الإنترنت (إذا كان متاحاً)
-  if (typeof Peer !== "undefined" && navigator.onLine && targetRoom) {
+  if (!hostConn && typeof Peer !== "undefined" && navigator.onLine) {
     try {
       peer = new Peer();
       peer.on("open", () => {
-        hostConn = peer.connect(PEER_PREFIX + targetRoom);
-        hostConn.on("open", () => setConnectedLabel(`● متصل بالغرفة ${targetRoom} ✓`));
+        hostConn = peer.connect(FIXED_LOBBY_ID);
+        hostConn.on("open", () => setStatus("● متصل بالجلسة تلقائياً ✓"));
         hostConn.on("data", (data) => {
           if (data && data.type === "STATE_UPDATE") {
             state = data.state;
@@ -225,14 +255,39 @@ function initNetworkAsClient(targetRoom) {
   }
 }
 
-// -------------------- WebRTC المباشر بدون إنترنت (Offline Hotspot / Wi-Fi) --------------------
-async function createOfflineOfferForHost() {
+// -------------------- الربط المباشر في البر بدون إنترنت عبر مسح باركود QR --------------------
+function renderQrCode(containerId, textData) {
+  const box = document.getElementById(containerId);
+  if (!box) return;
+  box.innerHTML = "";
+  if (typeof QRCode !== "undefined") {
+    new QRCode(box, {
+      text: textData,
+      width: 210,
+      height: 210,
+      correctLevel: QRCode.CorrectLevel.L
+    });
+  } else {
+    box.textContent = textData;
+  }
+}
+
+async function stopActiveScanner() {
+  if (activeScanner) {
+    try { await activeScanner.stop(); } catch (e) {}
+    activeScanner = null;
+  }
+}
+
+async function generateHostOfflineQr() {
   const pc = new RTCPeerConnection({ iceServers: [] });
   const dc = pc.createDataChannel("ff-offline");
   dc.onopen = () => {
     offlineDataChannels.push(dc);
     dc.send(JSON.stringify({ type: "STATE_UPDATE", state }));
     updateHostPeerCount();
+    stopActiveScanner();
+    document.getElementById("hostScannerBox").classList.add("hidden");
     alert("تم ربط الجهاز بنجاح بدون إنترنت ✓");
   };
   dc.onmessage = (ev) => {
@@ -244,90 +299,107 @@ async function createOfflineOfferForHost() {
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-  await new Promise((resolve) => {
-    if (pc.iceGatheringState === "complete") return resolve();
-    pc.onicegatheringstatechange = () => {
-      if (pc.iceGatheringState === "complete") resolve();
-    };
-    setTimeout(resolve, 1200);
+  await new Promise((r) => {
+    if (pc.iceGatheringState === "complete") return r();
+    pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") r(); };
+    setTimeout(r, 1000);
   });
 
   currentOfflinePC = pc;
-  const out = document.getElementById("hostOfflineOfferOut");
-  out.value = btoa(JSON.stringify(pc.localDescription));
-  out.classList.remove("hidden");
-  out.select();
+  const compactOffer = JSON.stringify({ t: "o", s: pc.localDescription.sdp });
+  document.getElementById("hostQrContainer").classList.remove("hidden");
+  renderQrCode("hostQrCanvas", compactOffer);
 }
 
-async function acceptOfflineAnswerOnHost(answerCode) {
-  if (!currentOfflinePC || !answerCode) return;
-  try {
-    const desc = JSON.parse(atob(answerCode.trim()));
-    await currentOfflinePC.setRemoteDescription(desc);
-  } catch (e) {
-    alert("كود الرد غير صحيح، تأكد من نسخه بالكامل.");
-  }
-}
-
-async function createOfflineAnswerOnClient(offerCode) {
-  try {
-    const offerDesc = JSON.parse(atob(offerCode.trim()));
-    const pc = new RTCPeerConnection({ iceServers: [] });
-    pc.ondatachannel = (ev) => {
-      const dc = ev.channel;
-      offlineDataChannels.push(dc);
-      dc.onopen = () => {
-        const s1 = document.getElementById("playerConnBadge");
-        const s2 = document.getElementById("boardStatusText");
-        if (s1) s1.textContent = "● متصل بالمضيف بدون نت ✓";
-        if (s2) s2.textContent = "● متصل بالمضيف بدون نت ✓";
-      };
-      dc.onmessage = (msgEv) => {
-        const data = JSON.parse(msgEv.data);
-        if (data.type === "STATE_UPDATE") {
-          state = data.state;
-          if (role === "board") renderBoardView();
-          if (role === "player") syncPlayerBuzzerUI();
-        }
-      };
-    };
-
-    await pc.setRemoteDescription(offerDesc);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await new Promise((resolve) => {
-      if (pc.iceGatheringState === "complete") return resolve();
-      pc.onicegatheringstatechange = () => {
-        if (pc.iceGatheringState === "complete") resolve();
-      };
-      setTimeout(resolve, 1200);
-    });
-
-    document.getElementById("clientAnswerOut").value = btoa(JSON.stringify(pc.localDescription));
-  } catch (e) {
-    alert("كود الدعوة غير صالح.");
-  }
-}
-
-// -------------------- البلوتوث المباشر (Web Bluetooth) --------------------
-async function connectViaBluetooth() {
-  const log = document.getElementById("bleStatusLog");
-  if (!navigator.bluetooth) {
-    if (log) log.textContent = "المتصفح لا يدعم Web Bluetooth. استخدم الربط المباشر عبر Hotspot أعلاه.";
-    else alert("المتصفح لا يدعم Web Bluetooth. استخدم كود الربط بدون نت.");
+async function startHostReplyScanner() {
+  const scanDiv = document.getElementById("hostScannerBox");
+  scanDiv.classList.remove("hidden");
+  await stopActiveScanner();
+  if (typeof Html5Qrcode === "undefined") {
+    alert("مكتبة الكاميرا غير محملة بعد، تأكد من فتح الموقع مرة واحدة بالإنترنت.");
     return;
   }
-  try {
-    if (log) log.textContent = "جاري البحث عن أجهزة قريبة...";
-    const device = await navigator.bluetooth.requestDevice({
-      acceptAllDevices: true,
-      optionalServices: ["generic_access", "battery_service"]
-    });
-    if (log) log.textContent = `تم الاقتران بـ: ${device.name || "جهاز قريب"} ✓`;
-    updateHostPeerCount();
-  } catch (e) {
-    if (log) log.textContent = `تم إلغاء البحث: ${e.message}`;
+  activeScanner = new Html5Qrcode("hostScannerBox");
+  activeScanner.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: 220 },
+    async (decodedText) => {
+      try {
+        const parsed = JSON.parse(decodedText);
+        if (parsed.t === "a" && currentOfflinePC) {
+          await stopActiveScanner();
+          scanDiv.classList.add("hidden");
+          await currentOfflinePC.setRemoteDescription({ type: "answer", sdp: parsed.s });
+        }
+      } catch (e) {}
+    }
+  ).catch((err) => alert("تعذر فتح الكاميرا: " + err));
+}
+
+async function startClientQrFlow() {
+  document.getElementById("clientQrModal").classList.remove("hidden");
+  document.getElementById("clientReplyQrContainer").classList.add("hidden");
+  const scanDiv = document.getElementById("clientScannerBox");
+  scanDiv.classList.remove("hidden");
+  await stopActiveScanner();
+
+  if (typeof Html5Qrcode === "undefined") {
+    alert("مكتبة الكاميرا غير محملة، افتح الموقع مرة واحدة بالإنترنت لحفظها.");
+    return;
   }
+
+  activeScanner = new Html5Qrcode("clientScannerBox");
+  activeScanner.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: 220 },
+    async (decodedText) => {
+      try {
+        const parsed = JSON.parse(decodedText);
+        if (parsed.t === "o") {
+          await stopActiveScanner();
+          scanDiv.classList.add("hidden");
+          await buildClientAnswerQr(parsed.s);
+        }
+      } catch (e) {}
+    }
+  ).catch((err) => alert("يرجى السماح بالوصول للكاميرا: " + err));
+}
+
+async function buildClientAnswerQr(offerSdp) {
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  pc.ondatachannel = (ev) => {
+    const dc = ev.channel;
+    offlineDataChannels.push(dc);
+    dc.onopen = () => {
+      document.getElementById("clientQrModal").classList.add("hidden");
+      const s1 = document.getElementById("playerConnBadge");
+      const s2 = document.getElementById("boardStatusText");
+      if (s1) s1.textContent = "● متصل بالمضيف بدون نت ✓";
+      if (s2) s2.textContent = "● متصل بالمضيف بدون نت ✓";
+    };
+    dc.onmessage = (msgEv) => {
+      const data = JSON.parse(msgEv.data);
+      if (data.type === "STATE_UPDATE") {
+        state = data.state;
+        if (role === "board") renderBoardView();
+        if (role === "player") syncPlayerBuzzerUI();
+      }
+    };
+  };
+
+  await pc.setRemoteDescription({ type: "offer", sdp: offerSdp });
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await new Promise((r) => {
+    if (pc.iceGatheringState === "complete") return r();
+    pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") r(); };
+    setTimeout(r, 1000);
+  });
+
+  const compactAnswer = JSON.stringify({ t: "a", s: pc.localDescription.sdp });
+  document.getElementById("clientQrStepText").textContent = "تم مسح كود المضيف! الآن دع المضيف يمسح هذا الباركود:";
+  document.getElementById("clientReplyQrContainer").classList.remove("hidden");
+  renderQrCode("clientReplyQrCanvas", compactAnswer);
 }
 
 // -------------------- منطق الجرس --------------------
@@ -474,7 +546,7 @@ function setQuestion(index) {
 }
 
 // -------------------- تفعيل الدور --------------------
-function activateRole(selectedRole, targetRoom = "") {
+function activateRole(selectedRole) {
   role = selectedRole;
   document.getElementById("role-gate").classList.add("hidden");
 
@@ -484,51 +556,31 @@ function activateRole(selectedRole, targetRoom = "") {
     renderHostView();
   } else if (role === "board") {
     document.getElementById("view-board").classList.remove("hidden");
-    initNetworkAsClient(targetRoom);
+    initNetworkAsClient();
     renderBoardView();
   } else if (role === "player") {
     document.getElementById("view-player").classList.remove("hidden");
-    initNetworkAsClient(targetRoom);
+    initNetworkAsClient();
   }
 }
 
 // -------------------- تهيئة الأحداث --------------------
 document.addEventListener("DOMContentLoaded", () => {
-  const params = new URLSearchParams(window.location.search);
-  const urlRole = params.get("role");
-  const urlRoom = params.get("room") || "";
+  startAutoDiscovery();
 
-  if (urlRole === "player" || urlRole === "board") {
-    activateRole(urlRole, urlRoom);
-  }
+  document.getElementById("btnAutoJoinPlayer").addEventListener("click", () => activateRole("player"));
+  document.getElementById("btnAutoJoinBoard").addEventListener("click", () => activateRole("board"));
+  document.getElementById("choosePlayerBtn").addEventListener("click", () => activateRole("player"));
+  document.getElementById("chooseBoardBtn").addEventListener("click", () => activateRole("board"));
 
   document.getElementById("chooseHostBtn").addEventListener("click", () => {
     document.getElementById("pinPromptBox").classList.remove("hidden");
-    document.getElementById("joinRoomBox").classList.add("hidden");
   });
 
   document.getElementById("confirmHostPinBtn").addEventListener("click", () => {
     const val = document.getElementById("hostPinInput").value.trim();
     if (val === HOST_PIN || val === "") activateRole("host");
     else alert("الرمز غير صحيح!");
-  });
-
-  let pendingClientRole = "player";
-  document.getElementById("chooseBoardBtn").addEventListener("click", () => {
-    pendingClientRole = "board";
-    document.getElementById("joinRoomBox").classList.remove("hidden");
-    document.getElementById("pinPromptBox").classList.add("hidden");
-  });
-
-  document.getElementById("choosePlayerBtn").addEventListener("click", () => {
-    pendingClientRole = "player";
-    document.getElementById("joinRoomBox").classList.remove("hidden");
-    document.getElementById("pinPromptBox").classList.add("hidden");
-  });
-
-  document.getElementById("confirmJoinRoomBtn").addEventListener("click", () => {
-    const code = document.getElementById("roomCodeInput").value.trim();
-    activateRole(pendingClientRole, code);
   });
 
   // أحداث لوحة المضيف
@@ -622,37 +674,14 @@ document.addEventListener("DOMContentLoaded", () => {
     e.target.textContent = state.sound ? "🔊" : "🔇";
   });
 
-  // نوافذ الربط
+  // نوافذ QR والربط
   document.getElementById("btnShareLinks").addEventListener("click", () => {
     document.getElementById("shareModal").classList.remove("hidden");
   });
-
-  document.getElementById("btnCreateOfflineOffer").addEventListener("click", createOfflineOfferForHost);
-  document.getElementById("btnAcceptOfflineAnswer").addEventListener("click", () => {
-    acceptOfflineAnswerOnHost(document.getElementById("hostOfflineAnswerIn").value);
-  });
-  document.getElementById("btnBleConnect").addEventListener("click", connectViaBluetooth);
-
-  document.getElementById("btnBoardOfflineSync").addEventListener("click", () => {
-    document.getElementById("clientOfflineModal").classList.remove("hidden");
-  });
-  document.getElementById("btnPlayerOfflineLink").addEventListener("click", () => {
-    document.getElementById("clientOfflineModal").classList.remove("hidden");
-  });
-  document.getElementById("btnClientMakeAnswer").addEventListener("click", () => {
-    createOfflineAnswerOnClient(document.getElementById("clientOfferIn").value);
-  });
-  document.getElementById("btnClientBle").addEventListener("click", connectViaBluetooth);
-
-  document.querySelectorAll("[data-copy]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const input = document.getElementById(btn.dataset.copy);
-      navigator.clipboard.writeText(input.value).then(() => {
-        btn.textContent = "تم ✓";
-        setTimeout(() => (btn.textContent = "نسخ"), 1500);
-      });
-    });
-  });
+  document.getElementById("btnGenHostQr").addEventListener("click", generateHostOfflineQr);
+  document.getElementById("btnHostScanReplyQr").addEventListener("click", startHostReplyScanner);
+  document.getElementById("btnPlayerScanQr").addEventListener("click", startClientQrFlow);
+  document.getElementById("btnBoardScanQr").addEventListener("click", startClientQrFlow);
 
   // بنك الأسئلة
   document.getElementById("btnOpenBank").addEventListener("click", () => {
@@ -662,7 +691,10 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("bankSearchInput").addEventListener("input", (e) => renderBankItems(e.target.value));
 
   document.querySelectorAll(".close-btn").forEach((btn) => {
-    btn.addEventListener("click", () => document.getElementById(btn.dataset.close).classList.add("hidden"));
+    btn.addEventListener("click", async () => {
+      await stopActiveScanner();
+      document.getElementById(btn.dataset.close).classList.add("hidden");
+    });
   });
 
   // جرس المتسابق
