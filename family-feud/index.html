@@ -7,8 +7,8 @@
   <title>تحدي العائلات | Family Feud</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="stylesheet" href="style.css" />
-  <!-- مكتبة PeerJS للربط المباشر بين الأجهزة عن بعد وبدون خادم -->
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- PeerJS يعمل تلقائياً عند توفر الإنترنت للربط عن بعد -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -18,28 +18,28 @@
       <div class="gate-card">
         <div class="brand-badge">؟!</div>
         <h1>تحدي العائلات</h1>
-        <p class="subtitle">اختر دور هذا الجهاز لبدء الجلسة</p>
+        <p class="subtitle">اختر دور هذا الجهاز للبدء</p>
 
         <div class="role-cards">
-          <button id="chooseHostBtn" class="role-option host-opt">
+          <button id="chooseHostBtn" class="role-option">
             <span class="role-emoji">🎛️</span>
-            <div>
+            <div class="role-info">
               <strong>مقدم اللعبة (المضيف)</strong>
-              <small>إدارة الأسئلة، النقاط، وكشف الإجابات (محمي برمز)</small>
+              <small>تحكم كامل بالأسئلة والنقاط (محمي برمز)</small>
             </div>
           </button>
 
-          <button id="chooseBoardBtn" class="role-option board-opt">
+          <button id="chooseBoardBtn" class="role-option">
             <span class="role-emoji">📺</span>
-            <div>
+            <div class="role-info">
               <strong>شاشة العرض العامة (TV)</strong>
-              <small>تعرض اللوحة والنقاط للجمهور بدون أزرار أو تلميحات</small>
+              <small>تعرض اللوحة للجمهور بدون أزرار أو إجابات مخفية</small>
             </div>
           </button>
 
-          <button id="choosePlayerBtn" class="role-option player-opt">
+          <button id="choosePlayerBtn" class="role-option">
             <span class="role-emoji">🚨</span>
-            <div>
+            <div class="role-info">
               <strong>متسابق (جرس السرعة)</strong>
               <small>شاشة الجرس فقط للمتسابقين</small>
             </div>
@@ -47,7 +47,7 @@
         </div>
 
         <div id="pinPromptBox" class="pin-box hidden">
-          <label>أدخل رمز المضيف (الافتراضي: 1234):</label>
+          <label>رمز المضيف (الافتراضي: 1234):</label>
           <div class="pin-row">
             <input id="hostPinInput" type="password" inputmode="numeric" maxlength="6" placeholder="1234" />
             <button id="confirmHostPinBtn" class="btn primary">دخول</button>
@@ -55,21 +55,21 @@
         </div>
 
         <div id="joinRoomBox" class="pin-box hidden">
-          <label>أدخل رمز الغرفة المكون من 4 أرقام من شاشة المضيف:</label>
+          <label>أدخل رمز الغرفة (4 أرقام) أو اربط مباشرة بدون إنترنت:</label>
           <div class="pin-row">
-            <input id="roomCodeInput" type="text" inputmode="numeric" maxlength="4" placeholder="مثال: 4829" />
-            <button id="confirmJoinRoomBtn" class="btn primary">اتصال بالغرفة</button>
+            <input id="roomCodeInput" type="text" inputmode="numeric" maxlength="4" placeholder="مثال: 2291" />
+            <button id="confirmJoinRoomBtn" class="btn primary">دخول</button>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- ==================== 2. شاشة العرض العامة (TV Board - للجمهور) ==================== -->
+    <!-- ==================== 2. شاشة العرض العامة (TV Board) ==================== -->
     <section id="view-board" class="screen hidden">
       <header class="tv-header">
         <div class="tv-team team-a">
-          <span id="tvTeamAName">عائلة الصقور</span>
-          <strong id="tvTeamAScore">0</strong>
+          <span id="tvTeamAName" class="t-name">عائلة الصقور</span>
+          <strong id="tvTeamAScore" class="t-score">0</strong>
         </div>
 
         <div class="tv-center">
@@ -81,8 +81,8 @@
         </div>
 
         <div class="tv-team team-b">
-          <span id="tvTeamBName">عائلة النجوم</span>
-          <strong id="tvTeamBScore">0</strong>
+          <span id="tvTeamBName" class="t-name">عائلة النجوم</span>
+          <strong id="tvTeamBScore" class="t-score">0</strong>
         </div>
       </header>
 
@@ -93,30 +93,36 @@
         <h2 id="tvQuestionText">بانتظار بدء الجولة من المضيف...</h2>
       </div>
 
-      <div id="tvAnswersGrid" class="answers-grid tv-grid"></div>
+      <div id="tvAnswersGrid" class="answers-grid"></div>
+
+      <div class="client-bar">
+        <span id="boardStatusText">● في انتظار الربط بالمضيف</span>
+        <button id="btnBoardOfflineSync" class="btn small">📡 ربط بدون نت (QR/كود)</button>
+      </div>
     </section>
 
-    <!-- ==================== 3. لوحة تحكم المضيف (Host - محمية) ==================== -->
+    <!-- ==================== 3. لوحة تحكم المضيف (Host) ==================== -->
     <section id="view-host" class="screen hidden">
       <header class="host-topbar">
-        <div class="host-title">
-          <strong>🎛️ لوحة المضيف</strong>
-          <span id="hostRoomBadge" class="room-pill">رمز الغرفة: ----</span>
+        <div class="host-title-row">
+          <strong class="h-title">🎛️ لوحة المضيف</strong>
+          <span id="hostRoomBadge" class="room-pill">غرفة: ----</span>
+          <span id="hostConnBadge" class="conn-dot" title="الأجهزة المتصلة">متصل: 0</span>
         </div>
         <div class="host-actions">
-          <button id="btnShareLinks" class="btn small primary">🔗 روابط اللاعبين والشاشة</button>
+          <button id="btnShareLinks" class="btn small primary">📡 ربط الأجهزة</button>
           <button id="btnOpenBank" class="btn small">📚 الأسئلة</button>
-          <button id="btnSound" class="btn small">🔊</button>
+          <button id="btnSound" class="btn small" aria-label="الصوت">🔊</button>
         </div>
       </header>
 
-      <!-- التحكم بالنقاط والأخطاء -->
+      <!-- بطاقات النقاط مصممة لمنع انكسار النصوص على الجوال -->
       <div class="host-score-grid">
         <div class="h-team team-a">
           <input id="hostTeamAName" class="team-input" value="عائلة الصقور" />
           <div id="hostTeamAScore" class="h-score">0</div>
           <div class="h-btns">
-            <button class="btn win-btn" data-award="A">+ منح النقاط</button>
+            <button class="btn win-btn" data-award="A">+ منح</button>
             <button class="btn sub-btn" data-minus="A">-10</button>
           </div>
         </div>
@@ -140,7 +146,7 @@
           <input id="hostTeamBName" class="team-input" value="عائلة النجوم" />
           <div id="hostTeamBScore" class="h-score">0</div>
           <div class="h-btns">
-            <button class="btn win-btn" data-award="B">+ منح النقاط</button>
+            <button class="btn win-btn" data-award="B">+ منح</button>
             <button class="btn sub-btn" data-minus="B">-10</button>
           </div>
         </div>
@@ -149,36 +155,35 @@
       <!-- تنبيه الجرس -->
       <div id="hostBuzzAlert" class="buzz-alert hidden">
         <span id="hostBuzzText">🚨 الأسرع: ---</span>
-        <button id="btnResetBuzz" class="btn small">تصفير الجرس</button>
+        <button id="btnResetBuzz" class="btn small">تصفير</button>
       </div>
 
-      <!-- السؤال الحالي + الإجابات كاملة للمضيف -->
+      <!-- بطاقة السؤال والإجابات -->
       <div class="host-question-card">
         <div class="hq-meta">
-          <span id="hostQNum">سؤال 1 من 105</span>
+          <span id="hostQNum" class="meta-chip">1 / 105</span>
           <span id="hostQCat" class="cat-tag">عام</span>
-          <button id="btnRevealAll" class="btn small">كشف الكل للشاشة</button>
+          <button id="btnRevealAll" class="btn small">كشف الكل</button>
         </div>
         <h2 id="hostQText">...</h2>
-        <p class="host-tip">💡 اضغط على أي إجابة لإظهارها أو إخفائها على شاشة العرض العامة:</p>
         <div id="hostAnswersList" class="host-answers-list"></div>
       </div>
 
-      <!-- التنقل بين الأسئلة -->
+      <!-- أزرار التنقل -->
       <footer class="host-footer">
         <button id="btnPrev" class="btn">➡️ السابق</button>
-        <button id="btnRandom" class="btn primary">🎲 سؤال عشوائي</button>
+        <button id="btnRandom" class="btn primary">🎲 عشوائي</button>
         <button id="btnNext" class="btn">التالي ⬅️</button>
         <button id="btnResetAll" class="btn danger-btn">🔄 تصفير</button>
       </footer>
     </section>
 
-    <!-- ==================== 4. شاشة جرس المتسابق (مقفلة للاعبين فقط) ==================== -->
+    <!-- ==================== 4. شاشة جرس المتسابق (مقفلة) ==================== -->
     <section id="view-player" class="screen hidden">
       <div class="player-wrapper">
         <div class="player-header">
           <h2>🚨 جرس المتسابق</h2>
-          <span id="playerConnBadge" class="conn-pill">جاري الاتصال...</span>
+          <span id="playerConnBadge" class="conn-pill">جاهز للربط</span>
         </div>
 
         <div class="player-form">
@@ -195,51 +200,94 @@
           <span id="buzzerSub" class="b-sub">جاهز وسريع الاستجابة</span>
         </button>
 
-        <p class="player-note">لا تغلق هذه الصفحة أثناء اللعب — سيهتز جوالك فوراً إذا كنت الأسرع.</p>
+        <div class="player-connect-actions">
+          <button id="btnPlayerOfflineLink" class="btn small">📡 ربط مباشر بدون نت (كود/بلوتوث)</button>
+        </div>
       </div>
     </section>
 
   </div>
 
-  <!-- نافذة مشاركة روابط الغرفة -->
+  <!-- ==================== نافذة ربط الأجهزة (أونلاين + أوفلاين + بلوتوث) ==================== -->
   <div id="shareModal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-head">
-        <h3>🔗 دعوة اللاعبين وشاشة العرض</h3>
+        <h3>📡 ربط الأجهزة (مع نت أو بدون نت)</h3>
         <button class="close-btn" data-close="shareModal">✕</button>
       </div>
       <div class="modal-body">
         <div class="room-code-display">
-          <span>رمز الغرفة:</span>
+          <span>رمز الغرفة</span>
           <strong id="modalRoomCode">----</strong>
         </div>
 
-        <div class="link-box">
-          <label>1️⃣ رابط جرس المتسابقين (أرسله في الجروب — لا يظهر لهم أي أسئلة):</label>
+        <!-- 1. الربط عبر الإنترنت / نقطة الاتصال -->
+        <div class="connect-section">
+          <h4>1️⃣ الربط التلقائي (عند توفر الإنترنت)</h4>
+          <p class="sec-desc">انسخ الرابط وأرسله للاعبين أو افتحه على التلفزيون:</p>
           <div class="copy-row">
             <input id="playerShareUrl" readonly />
-            <button class="btn primary" data-copy="playerShareUrl">نسخ</button>
+            <button class="btn small primary" data-copy="playerShareUrl">نسخ للاعب</button>
           </div>
-        </div>
-
-        <div class="link-box">
-          <label>2️⃣ رابط شاشة العرض العامة (افتحه على التلفزيون أو الآيباد):</label>
           <div class="copy-row">
             <input id="boardShareUrl" readonly />
-            <button class="btn primary" data-copy="boardShareUrl">نسخ</button>
+            <button class="btn small" data-copy="boardShareUrl">نسخ للشاشة</button>
           </div>
         </div>
 
-        <div id="connectedList" class="connected-status">الأجهزة المتصلة بالغرفة: 0</div>
+        <!-- 2. الربط المباشر بدون إنترنت 100% (Offline WebRTC Handshake) -->
+        <div class="connect-section">
+          <h4>2️⃣ الربط المباشر بدون إنترنت (Hotspot / Wi-Fi محلي)</h4>
+          <p class="sec-desc">إذا لم يتوفر إنترنت، أنشئ كود دعوة أوفلاين والصقه في جهاز المتسابق/الشاشة:</p>
+          <button id="btnCreateOfflineOffer" class="btn small primary">إنشاء كود دعوة بدون نت</button>
+          <textarea id="hostOfflineOfferOut" class="code-area hidden" readonly rows="2" placeholder="كود الدعوة..."></textarea>
+          <div class="copy-row">
+            <input id="hostOfflineAnswerIn" type="text" placeholder="الصق كود الرد القادم من الجهاز الآخر هنا..." />
+            <button id="btnAcceptOfflineAnswer" class="btn small">تأكيد الربط</button>
+          </div>
+        </div>
+
+        <!-- 3. البلوتوث المباشر -->
+        <div class="connect-section">
+          <h4>3️⃣ البلوتوث المباشر (Web Bluetooth)</h4>
+          <button id="btnBleConnect" class="btn small">🔵 بحث واقتران بجهاز بلوتوث</button>
+          <div id="bleStatusLog" class="status-mini">الحالة: جاهز</div>
+        </div>
+
+        <div id="connectedList" class="connected-status">الأجهزة المتصلة حالياً: 0</div>
       </div>
     </div>
   </div>
 
-  <!-- نافذة بنك الأسئلة للمضيف فقط -->
+  <!-- ==================== نافذة الربط بدون نت للمتسابق والشاشة ==================== -->
+  <div id="clientOfflineModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>📡 ربط الجهاز بدون إنترنت</h3>
+        <button class="close-btn" data-close="clientOfflineModal">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="sec-desc">1. الصق كود الدعوة المأخوذ من جوال المضيف:</p>
+        <div class="copy-row">
+          <input id="clientOfferIn" type="text" placeholder="الصق كود المضيف هنا..." />
+          <button id="btnClientMakeAnswer" class="btn small primary">توليد رد</button>
+        </div>
+        <p class="sec-desc">2. انسخ كود الرد التالي وأعطه للمضيف ليتم الربط فوراً:</p>
+        <div class="copy-row">
+          <input id="clientAnswerOut" readonly placeholder="سيظهر كود الرد هنا..." />
+          <button class="btn small" data-copy="clientAnswerOut">نسخ</button>
+        </div>
+        <hr class="sep" />
+        <button id="btnClientBle" class="btn small">🔵 أو الاقتران عبر البلوتوث</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== نافذة بنك الأسئلة للمضيف ==================== -->
   <div id="bankModal" class="modal hidden">
     <div class="modal-card large">
       <div class="modal-head">
-        <h3>📚 بنك الأسئلة (للمضيف فقط)</h3>
+        <h3>📚 بنك الأسئلة (105 سؤال)</h3>
         <button class="close-btn" data-close="bankModal">✕</button>
       </div>
       <div class="modal-body">
